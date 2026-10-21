@@ -21,6 +21,13 @@ static auto g_start = std::chrono::steady_clock::now();
 
 constexpr int kKeep = 30;
 
+// XBE_VERBOSE set: a release build writes every level as a debug build does, flushing each line so a stopped run
+// keeps its last lines
+static bool Verbose() {
+    static const bool on = kVerbose || std::getenv("XBE_VERBOSE") != nullptr;
+    return on;
+}
+
 // the run number of prefix_NNN.log, 0 for another name
 static int RunNumber(const fs::path& file, const std::string& prefix) {
     std::string name = file.filename().string();
@@ -55,7 +62,7 @@ void Init(const std::string& dir, const std::string& prefix, bool append) {
 const std::string& Path() { return g_path; }
 
 void Write(Level lv, const char* fmt, ...) {
-    static const bool all = std::getenv("XBE_LOG") != nullptr;  // release build: every level, flushed per line
+    static const bool all = std::getenv("XBE_LOG") != nullptr || Verbose();  // release build: every level, flushed per line
     if (!kVerbose && !all && lv < Level::Warn) return;
     char msg[4096];
     va_list ap;
