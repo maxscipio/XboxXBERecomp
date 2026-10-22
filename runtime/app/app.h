@@ -107,6 +107,9 @@ struct GameInfo {
     void (*rumble)(int port, uint16_t& left, uint16_t& right);
     // the game's first presented frame onward: true keeps the game waiting, the ui still drawn each frame
     bool (*hold)();
+    // the host folder of the console's hard disk (its partitions, the saves on E:), given the folder's name: hdd, or
+    // hdd2 and on for a second copy (Instance). Once, before boot; null keeps it beside the exe
+    std::filesystem::path (*hard_disk)(const std::wstring& folder);
 };
 extern const GameInfo kGame;
 
