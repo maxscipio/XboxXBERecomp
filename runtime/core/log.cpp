@@ -1,6 +1,7 @@
 #include "core/log.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -18,6 +19,7 @@ static std::mutex g_mutex;
 static FILE* g_file = nullptr;
 static std::string g_path;
 static auto g_start = std::chrono::steady_clock::now();
+static std::atomic<void (*)(const char*)> g_observer{nullptr};
 
 constexpr int kKeep = 30;
 
@@ -61,14 +63,19 @@ void Init(const std::string& dir, const std::string& prefix, bool append) {
 
 const std::string& Path() { return g_path; }
 
+void SetObserver(void (*observer)(const char* message)) { g_observer = observer; }
+
 void Write(Level lv, const char* fmt, ...) {
     static const bool all = std::getenv("XBE_LOG") != nullptr || Verbose();  // release build: every level, flushed per line
-    if (!kVerbose && !all && lv < Level::Warn) return;
+    auto observer = g_observer.load();
+    if (!observer && !kVerbose && !all && lv < Level::Warn) return;
     char msg[4096];
     va_list ap;
     va_start(ap, fmt);
     std::vsnprintf(msg, sizeof(msg), fmt, ap);
     va_end(ap);
+    if (observer) observer(msg);
+    if (!kVerbose && !all && lv < Level::Warn) return;
     double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - g_start).count();
     static const char* names[] = {"debug", "info", "warn", "error", "info"};
     auto tid = std::hash<std::thread::id>()(std::this_thread::get_id()) & 0xFFFF;
