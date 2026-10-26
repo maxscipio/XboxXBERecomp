@@ -23,6 +23,7 @@ struct Settings {
     uint32_t fps_cap = 60;           // 0 unlimited, kFpsCapRefresh the monitor's refresh rate
     bool vsync = true;
     uint32_t aniso = 0;              // 0 as the game asks
+    bool shader_cache = true;        // compiled shaders and pipelines kept in <exe dir>/shader_cache for the next run
     std::string join_ip;                   // co-op: a host past the LAN the system link search also asks
 };
 

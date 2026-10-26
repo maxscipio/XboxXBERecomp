@@ -541,6 +541,7 @@ void Analysis::Run() {
         }
     }
     EhContinuations();
+    SetjmpContinuations();
     // every direct call from decoded code names a function
     for (bool changed = true; changed;) {
         changed = false;
@@ -629,6 +630,20 @@ void Analysis::EhContinuations() {
         }
     }
     std::fprintf(stderr, "c++ eh: %zu catch blocks, %zu continuations\n", catches, continuations.size());
+}
+
+// A call to a setjmp function returns a second time when longjmp jumps back to the instruction after the call.
+// That address is made a continuation, so the jump throws X86Resume and unwinds the host stack to the caller.
+void Analysis::SetjmpContinuations() {
+    if (cfg.setjmp.empty()) return;
+    std::vector<uint32_t> resumes;
+    for (auto& [va, insn] : insns_)
+        if (insn.flow == Flow::Call && cfg.setjmp.count(insn.target)) resumes.push_back(va + insn.len);
+    for (uint32_t c : resumes) {
+        MakeFunction(c);
+        if (functions.count(c)) continuations.insert(c);
+    }
+    std::fprintf(stderr, "setjmp: %zu resume points\n", resumes.size());
 }
 
 std::vector<uint32_t> Analysis::Body(uint32_t entry) const {

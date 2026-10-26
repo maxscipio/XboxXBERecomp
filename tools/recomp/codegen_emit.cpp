@@ -103,6 +103,8 @@ std::string CodeGen::EmitFunction(uint32_t entry) {
             ops[0].mem.segment == ZYDIS_REGISTER_FS && ops[0].mem.base == ZYDIS_REGISTER_NONE &&
             ops[0].mem.index == ZYDIS_REGISTER_NONE && ops[0].mem.disp.value == 0)
             seh = true;
+        const Insn* i = an_.InsnAt(va);
+        if (i && i->flow == Flow::Call && an_.cfg.setjmp.count(i->target)) seh = true;
     }
     std::string out;
     out += F("X86_FUNC(__imp__%s) {\n", FuncName(entry).c_str());
@@ -113,7 +115,7 @@ std::string CodeGen::EmitFunction(uint32_t entry) {
     if (!entry_first) out += F("\tgoto loc_%08X;\n", entry);
     if (labels_.count(entry) && entry_first) out += F("loc_%08X:;\n", entry);
     out += body_;
-    if (seh) out += "\t} catch (const X86Resume& r) {\n\t\tif (r.esp >= x86_frame) throw;\n\t\tx86_resume(ctx, base, r);\n\t}\n";
+    if (seh) out += "\t} catch (const X86Resume& r) {\n\t\tif (r.esp >= x86_frame) throw;\n\t\tx86_resume(ctx, base, r, x86_frame);\n\t}\n";
     out += "}\n";
     if (an_.cfg.trace.count(entry))
         out += F("X86_TRACED_FUNC(%s, __imp__%s, 0x%XU)\n\n", FuncName(entry).c_str(), FuncName(entry).c_str(), entry);

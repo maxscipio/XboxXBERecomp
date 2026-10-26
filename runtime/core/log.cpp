@@ -68,7 +68,7 @@ void Write(Level lv, const char* fmt, ...) {
     n = std::min(n, int(sizeof(line)) - 1);
     if (g_file) {
         std::fwrite(line, 1, size_t(n), g_file);
-        if (lv >= Level::Warn) std::fflush(g_file);
+        if (kVerbose || lv >= Level::Warn) std::fflush(g_file);  // a debug log must survive a killed or hung process
     }
     std::fwrite(line, 1, size_t(n), stderr);
 }

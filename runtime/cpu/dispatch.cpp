@@ -165,9 +165,23 @@ void x86_icall(X86Context& ctx, uint8_t* base, uint32_t target) {
     x86_trap(ctx, ret, "indirect call to unknown code");
 }
 
-void x86_resume(X86Context& ctx, uint8_t* base, const X86Resume& r) {
-    ctx.esp = r.esp;
-    dispatch::Find(r.target)(ctx, base);
+void x86_resume(X86Context& ctx, uint8_t* base, const X86Resume& r, uint32_t frame) {
+    // The continuation runs here, inside the catch block of the frame that owns it, which a later throw cannot
+    // reach: a function that longjmps to the same setjmp again (the game does, to restart its main loop) would
+    // escape. The loop catches the next resume aimed at this frame.
+    X86Resume cur = r;
+    for (;;) {
+        try {
+            ctx.esp = cur.esp;
+            dispatch::Find(cur.target)(ctx, base);
+            return;
+        } catch (const X86Resume& next) {
+            if (next.esp >= frame) throw;
+            static std::atomic<int> logged{0};
+            if (logged++ < 8) LOGR("resume: another jump to the frame at %08X (target %08X)", frame, next.target);
+            cur = next;
+        }
+    }
 }
 
 void x86_kernel(X86Context& ctx, uint8_t* base, uint32_t ordinal) {
