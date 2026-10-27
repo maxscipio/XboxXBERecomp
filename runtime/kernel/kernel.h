@@ -111,6 +111,7 @@ struct Object {
     bool notification = false;  // manual reset event or notification timer
     uint32_t owner = 0;         // mutant owner thread
     uint32_t recursion = 0;
+    std::deque<uint64_t> waiters;  // mutant: blocked waits in arrival order, the first one is handed the mutant
     std::string name;
     explicit Object(ObjType t) : type(t) {}
     virtual ~Object() = default;
@@ -166,6 +167,7 @@ void StartHostThread(const char* name, std::function<void(X86Context&)> fn);
 void RunDpcs(X86Context& ctx);
 void InitKernelData();
 void LogGuestStack(X86Context& ctx, int words);
+void DumpFiles();  // F3: the last file calls
 X86Context& CurrentContext();
 ThreadRef CreateThread(uint32_t stack_size, uint32_t tls_size, uint32_t system_routine, uint32_t start_routine,
                        uint32_t start_context, bool suspended);

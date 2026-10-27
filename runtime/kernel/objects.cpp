@@ -144,8 +144,10 @@ static uint32_t Me() {
     return t ? t->ethread : 1;
 }
 
-static bool Satisfied(Object& o, uint32_t me) {
-    if (o.type == ObjType::Mutant) return o.signal > 0 || o.owner == me;
+// A mutant going free is handed to the longest blocked wait, as the console's dispatcher does; without that, a thread that
+// releases and re-takes it in a loop starves the others.
+static bool Satisfied(Object& o, uint32_t me, uint64_t ticket) {
+    if (o.type == ObjType::Mutant) return o.owner == me || (o.signal > 0 && (o.waiters.empty() || o.waiters.front() == ticket));
     return o.signal > 0;
 }
 
@@ -189,21 +191,40 @@ int64_t ToDeadline(int64_t due) {
 
 static uint32_t WaitFor(const std::vector<ObjectRef>& objs, bool wait_all, int64_t timeout, bool alertable) {
     using namespace std::chrono;
+    static uint64_t g_ticket = 0;
     Thread* self = Current();
     uint32_t me = Me();
     bool infinite = timeout == INT64_MAX;
     int64_t deadline = infinite ? 0 : ToDeadline(timeout);
     std::unique_lock<std::mutex> lock(g_dispatch);
+    uint64_t ticket = ++g_ticket;
+    bool queued = false;
+    auto leave = [&] {
+        if (!queued) return;
+        queued = false;
+        for (auto& o : objs)
+            if (o && o->type == ObjType::Mutant) {
+                auto it = std::find(o->waiters.begin(), o->waiters.end(), ticket);
+                if (it != o->waiters.end()) o->waiters.erase(it);
+            }
+        g_cv.notify_all();  // the next in line may be satisfied now
+    };
+    struct Leave {
+        decltype(leave)& f;
+        ~Leave() { f(); }
+    } guard{leave};
     for (;;) {
         if (wait_all) {
-            bool all = std::all_of(objs.begin(), objs.end(), [&](const ObjectRef& o) { return o && Satisfied(*o, me); });
+            bool all = std::all_of(objs.begin(), objs.end(), [&](const ObjectRef& o) { return o && Satisfied(*o, me, ticket); });
             if (all) {
+                leave();
                 for (auto& o : objs) Consume(*o, me);
                 return kWait0;
             }
         } else {
             for (size_t i = 0; i < objs.size(); i++)
-                if (objs[i] && Satisfied(*objs[i], me)) {
+                if (objs[i] && Satisfied(*objs[i], me, ticket)) {
+                    leave();
                     Consume(*objs[i], me);
                     return kWait0 + uint32_t(i);
                 }
@@ -215,6 +236,7 @@ static uint32_t WaitFor(const std::vector<ObjectRef>& objs, bool wait_all, int64
                 pending = !self->apcs.empty();
             }
             if (pending) {
+                leave();
                 lock.unlock();
                 RunApcs(*self);
                 return kUserApc;
@@ -223,8 +245,16 @@ static uint32_t WaitFor(const std::vector<ObjectRef>& objs, bool wait_all, int64
         if (!infinite) {
             int64_t now = duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();
             if (now >= deadline) return kTimeout;
+        }
+        if (!queued) {
+            queued = true;
+            for (auto& o : objs)
+                if (o && o->type == ObjType::Mutant) o->waiters.push_back(ticket);
+        }
+        if (!infinite) {
+            int64_t now = duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();
             // bounded so alertable waits notice new APCs
-            g_cv.wait_for(lock, nanoseconds(std::min<int64_t>(deadline - now, 50000000)));
+            g_cv.wait_for(lock, nanoseconds(std::min<int64_t>(std::max<int64_t>(deadline - now, 0), 50000000)));
         } else {
             g_cv.wait_for(lock, milliseconds(50));
         }

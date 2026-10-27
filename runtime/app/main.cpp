@@ -26,6 +26,7 @@
 #include "kernel/kernel.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
+void DumpAudio();  // xdk/dsound.cpp
 
 namespace app {
 
@@ -70,6 +71,8 @@ LONG WINAPI WriteCrashDump(EXCEPTION_POINTERS* e) {
 
 void DumpThreads() {
     gpu::g_capture = true;
+    DumpAudio();
+    kernel::DumpFiles();
     for (auto& t : kernel::Threads())
         if (t->ctx) {
             LOGI("thread %X", t->id);

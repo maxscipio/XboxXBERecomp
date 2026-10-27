@@ -878,6 +878,8 @@ HLE_STDCALL(D3DDevice_CreateVertexShader, 4) {
     uint32_t rec = mem::AllocSystem(16, 16);
     vs->handle = rec | 1;
     g_vs[vs->handle] = vs;
+    // the inlined GetVertexShaderSize reads the instruction count here, games chain load slots with it
+    W32(rec + 8, uint32_t(vs->program.size() / 4));
     W32(out, vs->handle);
     LOG_FIRST(64, "d3d: vertex shader %08X, %zu decl tokens, %zu instructions, type %X", vs->handle, vs->decl.size(),
               vs->program.size() / 4, vs->program_type);

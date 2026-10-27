@@ -2113,6 +2113,10 @@ void FillSurfaceConstants(const State& s, GuestExtent size, DrawConstants& c) {
     c.misc[1] = SimpleState(s, kMAlphaTestEnable) ? float(Cmp(SimpleState(s, kMAlphaFunc)) - 1) : kAlphaTestAlways;
     c.misc[2] = float(Cmp(s.rs[kRsShadowFunc]) - 1);
     c.misc[3] = s.rs[kRsSpecularEnable] ? 1.0f : 0.0f;
+    c.ptsz[0] = s.rs[kRsPointSpriteEnable] ? 1.0f : 0.0f;
+    c.ptsz[1] = Bits(s.rs[kRsPointSize]);
+    c.ptsz[2] = Bits(s.rs[kRsPointSizeMin]);
+    c.ptsz[3] = Bits(s.rs[kRsPointSizeMax]);
 }
 
 void FillCombinerConstants(const State& s, DrawConstants& c) {
@@ -2345,6 +2349,14 @@ void D3D12Backend::CaptureDraw(const State& s, uint32_t prim, uint32_t count, co
 // small draws: their inputs and constants; then ends the draw's line
 void D3D12Backend::EndDrawCapture(const State& s, const Assembled& a, uint32_t count, const DrawConstants& c) {
     if (count <= kQuadVertices) CaptureInputs(s, a, c);
+    // the first big draw of each vertex shader: its transform rows at full precision
+    else if (cap_sh_.insert((1ull << 40) | s.vs_handle).second) {
+        fprintf(cap_, "\n     transform");
+        for (int r : {0, 1, 2, 3, 96, 97, 98, 99, 100}) {
+            const auto& v = s.vsc[size_t(r)];
+            fprintf(cap_, "\n     hw%d %.9g %.9g %.9g %.9g", r, v[0], v[1], v[2], v[3]);
+        }
+    }
     fputc('\n', cap_);
 }
 
