@@ -1,5 +1,13 @@
 // Direct3D 8 (XDK 4831 and 5849) entry points the title calls, implemented on the host renderer.
 // Resource creation, locking and the XG helpers stay recompiled: they only manage memory.
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -268,7 +276,15 @@ void SetFrameBuffers(const char* caller, uint32_t pp) {
     }
     if (!g_backend) {
         g_backend = gpu::CreateBackend();
-        if (!g_backend->Init(w, h)) LOGE("d3d: renderer init failed");
+        if (!g_backend->Init(w, h)) {
+            LOGE("d3d: renderer init failed");
+            // no owner window: this runs on the title's thread and the window may already be fullscreen over the box
+            MessageBoxW(nullptr,
+                        L"Direct3D 12 could not be started. Make sure your graphics card supports it and its driver "
+                        L"is up to date.",
+                        app::kGame.short_title, MB_ICONERROR | MB_TOPMOST);
+            kernel::Shutdown(1);
+        }
         if (kRenderThread) g_backend = gpu::CreateThreadedBackend(std::move(g_backend));
     }
     g_state.viewport = {0, 0, w, h, 0.0f, 1.0f};
@@ -790,9 +806,11 @@ HLE_STDCALL(D3DDevice_SetTexture, 2) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     uint32_t stage = a[0] & 3, tex = a[1];
     uint32_t old = Dev(kDevTextures + stage * 4);
-    AddRef(ctx, tex);
+    // bound again: the AddRef and Release would cancel out
+    bool same = tex == old;
+    if (!same) AddRef(ctx, tex);
     SetDev(kDevTextures + stage * 4, tex);
-    Release(ctx, old);
+    if (!same) Release(ctx, old);
     g_state.textures[stage] = tex;
     W32(kDirtyFlags, R32(kDirtyFlags) | XDK_DirtyFlags_Texture);
     return 0;
@@ -831,10 +849,11 @@ HLE_STDCALL(D3DDevice_SetStreamSource, 3) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     uint32_t n = a[0] & 15, vb = a[1], stride = a[2];
     uint32_t old = R32(kStreams + n * kStreamSize + XDK_Stream_Buffer);
-    AddRef(ctx, vb);
+    bool same = vb == old;
+    if (!same) AddRef(ctx, vb);
     W32(kStreams + n * kStreamSize + XDK_Stream_Stride, stride);
     W32(kStreams + n * kStreamSize + XDK_Stream_Buffer, vb);
-    Release(ctx, old);
+    if (!same) Release(ctx, old);
     g_state.streams[n] = {vb, stride};
     return 0;
 }
@@ -844,11 +863,12 @@ HLE_STDCALL(D3DDevice_SetIndices, 2) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     uint32_t ib = a[0];
     uint32_t old = Dev(kDevIndexBuffer);
-    AddRef(ctx, ib);
+    bool same = ib == old;
+    if (!same) AddRef(ctx, ib);
     W32(kIndexData, ib ? R32(ib + 4) : 0);
     SetDev(kDevIndexBuffer, ib);
     SetDev(kDevBaseVertex, a[1]);
-    Release(ctx, old);
+    if (!same) Release(ctx, old);
     g_state.index_buffer = ib;
     g_state.index_data = ib ? R32(ib + 4) : 0;
     g_state.base_vertex = a[1];

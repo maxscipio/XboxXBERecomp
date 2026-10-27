@@ -24,6 +24,9 @@ struct Settings {
     bool vsync = true;
     uint32_t aniso = 0;              // 0 as the game asks
     bool shader_cache = true;        // compiled shaders and pipelines kept in <exe dir>/shader_cache for the next run
+    bool custom_textures = true;     // images in textures\replacement\ beside the exe replace the game's
+    bool dump_textures = false;      // each texture once into textures\dumps\ beside the exe
+    uint32_t texture_dump_format = 0;  // 0 PNG, 1 DDS
     std::string join_ip;                   // co-op: a host past the LAN the system link search also asks
 };
 

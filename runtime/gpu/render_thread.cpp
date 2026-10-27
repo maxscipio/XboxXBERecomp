@@ -183,8 +183,11 @@ public:
         Use(front.header);
         uint64_t id = Submit();
         g_perf_capture_ns += Ns(t);
-        // the title records one frame while the one before it draws
+        // the title records one frame while the one before it draws, on the GPU too: a GPU bound frame rate then paces
+        // the game like a frame rate cap, and the frame times the game measures match the frames shown
         Wait(last_present_, WaitFor::Frame, nullptr);
+        if (presents_) inner_->WaitGpuFrame(presents_ - 1);
+        presents_++;
         last_present_ = id;
     }
 
@@ -481,6 +484,7 @@ private:
     std::unordered_set<uint64_t> logged_;   // perf diagnostic: read-backs named once, by address and kind
     uint64_t next_id_ = 0, last_present_ = 0;
     bool reports_unflushed_ = false;  // a GetReport that no Flush has followed
+    uint64_t presents_ = 0;
 
     // the render thread
     State state_;
