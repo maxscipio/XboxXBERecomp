@@ -181,7 +181,8 @@ IDirectSoundBuffer_Unlock = {}
 IDirectSoundStream_SetEG = {}
 IDirectSound_CommitDeferredSettings = {sec = "DSOUND", len = 0x18, hash = "0x1170ED95F94B6D21", calls = [[0x9A, "0x46195814CF28FEA9", [[0x1E, "0x77CF69460E7107DD"], [0x25, "0x14163B51FDB298C"], [0x240, "0x65DA9BE004D93BEB"], [0xB7, "0x1DDF65497D36DFB3"], [0x11, "0x36322341293944C0"], [0x1E, "0x38D1F03FFD1B5C9C"]]]], ret = 4, regs = []}
 IDirectSound_CommitEffectData = {sec = "DSOUND", len = 0x18, hash = "0x1170ED95F94B6D21", calls = [[0x50, "0x1C69B601A556E179", [[0x1E, "0x77CF69460E7107DD"], [0x65, "0xE183E89F2A768EF0"]]]], ret = 4, regs = []}
-IDirectSound_CreateSoundBuffer = {sec = "DSOUND", len = 0x24, hash = "0xBBF11F9B43DBC968", calls = [[0x9C, "0x71DC342A694E3431", [[0x1E, "0x77CF69460E7107DD"], [0x11, "0x2B6130851883E06E"], [0x18, "0x7267DDD0F33D17E1"], [0xE7, "0x4386FBCF796CD309"]]]], ret = 16, regs = []}
+IDirectSound_CreateSoundBuffer = {sec = "DSOUND", len = 0x24, hash = "0xBBF11F9B43DBC968", calls = [[0x91, "0xA8084C901AC7275A", [[0x1E, "0x77CF69460E7107DD"], [0x11, "0x2B6130851883E06E"], [0x25, "0xA8574C55272D2AC1"], [0xAA, "0x4BB4CB7B01AD6A56"]]]], ret = 16, regs = []}
+IDirectSound_CreateSoundStream = {sec = "DSOUND", len = 0x24, hash = "0xBBF11F9B43DBC968", calls = [[0x9C, "0x71DC342A694E3431", [[0x1E, "0x77CF69460E7107DD"], [0x11, "0x2B6130851883E06E"], [0x18, "0x7267DDD0F33D17E1"], [0xE7, "0x4386FBCF796CD309"]]]], ret = 16, regs = []}
 IDirectSound_DownloadEffectsImage = {sec = "DSOUND", len = 0x27, hash = "0xE0165516ACA00EEE", calls = [[0x64, "0x38E54145D1415FCA", [[0x1E, "0x77CF69460E7107DD"], [0x22, "0x269F4DF9DEC8FBD2"], [0x2F, "0x9F4562C77D21CE82"]]]], ret = 20, regs = []}
 IDirectSound_EnableHeadphones = {sec = "DSOUND", len = 0x1C, hash = "0xE191666E1853C472", calls = [[0x11B, "0xD8382E0576C3EE0A", [[0x1E, "0x77CF69460E7107DD"], [0x59, "0xAE2E3FD38209061B"]]]], ret = 8, regs = []}
 IDirectSound_GetEffectData = {sec = "DSOUND", len = 0x27, hash = "0xE0165516ACA00EEE", calls = [[0x5F, "0x713FFEEA2AC9535", [[0x1E, "0x77CF69460E7107DD"], [0x3A, "0x7176C46D954C14"]]]], ret = 20, regs = []}
@@ -189,6 +190,7 @@ IDirectSound_GetOutputLevels = {sec = "DSOUND", len = 0x20, hash = "0xFE4AEA0C39
 IDirectSound_GetSpeakerConfig = {sec = "DSOUND", len = 0x1C, hash = "0xE191666E1853C472", calls = [[0x4D, "0x83E5DA58CD94A7E2", [[0x1E, "0x77CF69460E7107DD"]]]], ret = 8, regs = []}
 IDirectSound_Release = {sec = "DSOUND", len = 0x16, hash = "0xF58E37D24D1C967F", ret = 4, regs = []}
 IDirectSound_SetDistanceFactor = {}
+IDirectSound_SetAllParameters = {sec = "DSOUND", len = 0x20, hash = "0xFE4AEA0C39023D83", calls = [[0xE5, "0xDED1A9FB61D249B6", [[0x1E, "0x77CF69460E7107DD"], [0x9A, "0x46195814CF28FEA9"]]]], ret = 12, regs = []}
 IDirectSound_SetDopplerFactor = {}
 IDirectSound_SetEffectData = {sec = "DSOUND", len = 0x2A, hash = "0x76D2C0E797675B97", calls = [[0x62, "0x3DB83A86E5CE6F39", [[0x1E, "0x77CF69460E7107DD"], [0xA9, "0xE757D724F9BF8D0"]]]], ret = 24, regs = []}
 IDirectSound_SetI3DL2Listener = {sec = "DSOUND", len = 0x20, hash = "0xFE4AEA0C39023D83", calls = [[0x108, "0xC701FEDC17EE4A4B", [[0x1E, "0x77CF69460E7107DD"], [0x9A, "0x46195814CF28FEA9"]]]], ret = 12, regs = []}
@@ -274,4 +276,4 @@ D3D_pDevice = {in = "D3DDevice_Begin", insn = 1, op = "disp"}
 DSound_StreamVtable = {in = "DSound_StreamVtable_ref", insn = 6, op = "imm"}
 DSound_StreamVtable2 = {in = "DSound_StreamVtable_ref", insn = 7, op = "imm"}
 XPP_GamepadType = {in = "XPP_GamepadType_ref", insn = 2, op = "imm", deref = [0x0, 0x4]}
-XPP_MemoryUnitType = {in = "XInitDevices", insn = 9, op = "imm", deref = [0x38]}
+XPP_MemoryUnitType = {in = "XInitDevices", insn = 9, op = "imm", deref = [0x39]}

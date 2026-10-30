@@ -109,6 +109,10 @@ X86Func* Find(uint32_t guest);
 #define SYM_CDirectSoundStream_SetPitch FFFFFF14
 #define HAS_CDirectSoundStream_SetPitch 0
 #endif
+#ifndef SYM_IDirectSound_SetAllParameters
+#define SYM_IDirectSound_SetAllParameters FFFFFF15
+#define HAS_IDirectSound_SetAllParameters 0
+#endif
 
 namespace {
 
@@ -831,7 +835,7 @@ static void AuditExports() {
         SYM(IDirectSound_SetEffectData), SYM(IDirectSound_EnableHeadphones), SYM(IDirectSound_SetMixBinHeadroom),
         SYM(IDirectSound_CommitDeferredSettings), SYM(IDirectSound_SetDopplerFactor), SYM(IDirectSound_SetRolloffFactor),
         SYM(IDirectSound_SetDistanceFactor), SYM(IDirectSound_SetVelocity), SYM(IDirectSound_SetI3DL2Listener),
-        SYM(IDirectSound_SetPosition), SYM(IDirectSound_SetOrientation), SYM(IDirectSound_SynchPlayback), SYM(DirectSoundDoWork),
+        SYM(IDirectSound_SetPosition), SYM(IDirectSound_SetOrientation), SYM(IDirectSound_SetAllParameters), SYM(IDirectSound_SynchPlayback), SYM(DirectSoundDoWork),
         SYM(IDirectSound_DownloadEffectsImage), SYM(IDirectSound_GetEffectData), SYM(IDirectSound_CommitEffectData),
         SYM(IDirectSound_GetOutputLevels), SYM(IDirectSoundBuffer_SetPlayRegion), SYM(IDirectSoundBuffer_SetAllParameters),
         SYM(IDirectSoundBuffer_SetFormat), SYM(IDirectSoundBuffer_SetOutputBuffer), SYM(IDirectSoundBuffer_SetRolloffCurve),
@@ -933,6 +937,16 @@ HLE_STDCALL(IDirectSound_SetOrientation, 8) {
     for (int i = 0; i < 3; i++) {
         g_front[i] = F32(a[1 + i]);
         g_top[i] = F32(a[4 + i]);
+    }
+    return 0;
+}
+// (this, DS3DLISTENER, apply): size, position, velocity, front, top, then the distance, rolloff and doppler factors
+HLE_STDCALL(IDirectSound_SetAllParameters, 3) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    for (int i = 0; i < 3; i++) {
+        g_listener[i] = F32(R32(a[1] + 4 + i * 4));
+        g_front[i] = F32(R32(a[1] + 28 + i * 4));
+        g_top[i] = F32(R32(a[1] + 40 + i * 4));
     }
     return 0;
 }
