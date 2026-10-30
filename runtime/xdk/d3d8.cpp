@@ -960,27 +960,49 @@ HLE_STDCALL(D3DDevice_SetVertexShader, 1) {
     return 0;
 }
 
+// While a push buffer records (BeginPushBuffer sets bit 2 of the device flags) the library writes the constant load and
+// the data into the buffer, and a title's fixups patch those words later; the constants are not set until it runs.
+bool RecordConstants(uint32_t reg, uint32_t src, uint32_t dwords) {
+    constexpr uint32_t kRecordingFlag = 4, kConstantLoad = 0x1EA4, kConstantData = 0x0B80, kMaxRun = 16;
+    if (!(Dev(XDK_CDevice_Flags) & kRecordingFlag)) return false;
+    uint32_t p = Dev(kDevPush);
+    W32(p, 1 << 18 | kConstantLoad);
+    W32(p + 4, reg);
+    p += 8;
+    for (uint32_t done = 0; done < dwords;) {
+        uint32_t n = std::min(dwords - done, kMaxRun);
+        W32(p, n << 18 | kConstantData);
+        for (uint32_t i = 0; i < n; i++) W32(p + 4 + i * 4, R32(src + (done + i) * 4));
+        p += 4 + n * 4;
+        done += n;
+    }
+    SetDev(kDevPush, p);
+    return true;
+}
+
+void SetConstants(uint32_t reg, uint32_t src, uint32_t count) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    if (RecordConstants(reg, src, count * 4)) return;
+    for (uint32_t i = 0; i < count && reg + i < 192; i++) std::memcpy(g_state.vsc[reg + i].data(), HostPtr(src + i * 16), 16);
+}
+
 HLE_FASTCALL(D3DDevice_SetVertexShaderConstant1Fast, 0) {
-    uint32_t reg = a[0];
-    if (reg < 192) std::memcpy(g_state.vsc[reg].data(), HostPtr(a[1]), 16);
+    SetConstants(a[0], a[1], 1);
     return 0;
 }
 
 HLE_FASTCALL(D3DDevice_SetVertexShaderConstant1, 0) {
-    uint32_t reg = a[0];
-    if (reg < 192) std::memcpy(g_state.vsc[reg].data(), HostPtr(a[1]), 16);
+    SetConstants(a[0], a[1], 1);
     return 0;
 }
 
 HLE_FASTCALL(D3DDevice_SetVertexShaderConstant4, 0) {
-    uint32_t reg = a[0], src = a[1];
-    for (uint32_t i = 0; i < 4 && reg + i < 192; i++) std::memcpy(g_state.vsc[reg + i].data(), HostPtr(src + i * 16), 16);
+    SetConstants(a[0], a[1], 4);
     return 0;
 }
 
 HLE_FASTCALL(D3DDevice_SetVertexShaderConstantNotInlineFast, 1) {
-    uint32_t reg = a[0], src = a[1], dwords = a[2];
-    for (uint32_t i = 0; i < dwords / 4 && reg + i < 192; i++) std::memcpy(g_state.vsc[reg + i].data(), HostPtr(src + i * 16), 16);
+    SetConstants(a[0], a[1], a[2] / 4);
     return 0;
 }
 
