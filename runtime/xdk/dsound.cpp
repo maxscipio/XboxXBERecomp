@@ -113,6 +113,14 @@ X86Func* Find(uint32_t guest);
 #define SYM_IDirectSound_SetAllParameters FFFFFF15
 #define HAS_IDirectSound_SetAllParameters 0
 #endif
+#ifndef SYM_IDirectSoundBuffer_SetLFO
+#define SYM_IDirectSoundBuffer_SetLFO FFFFFF16
+#define HAS_IDirectSoundBuffer_SetLFO 0
+#endif
+#ifndef SYM_CDirectSoundStream_SetLFO
+#define SYM_CDirectSoundStream_SetLFO FFFFFF17
+#define HAS_CDirectSoundStream_SetLFO 0
+#endif
 
 namespace {
 
@@ -843,7 +851,7 @@ static void AuditExports() {
         SYM(XAudioDownloadEffectsImage), SYM(DirectSoundCreateBuffer), SYM(IDirectSound_CreateSoundBuffer),
         SYM(IDirectSoundBuffer_Release), SYM(IDirectSoundBuffer_Unlock), SYM(IDirectSoundBuffer_SetBufferData),
         SYM(IDirectSoundBuffer_Play), SYM(IDirectSoundBuffer_Stop), SYM(IDirectSoundBuffer_SetLoopRegion),
-        SYM(IDirectSoundBuffer_SetNotificationPositions), SYM(IDirectSoundBuffer_SetPitch), SYM(IDirectSoundBuffer_SetMode), SYM(IDirectSoundBuffer_SetRolloffFactor),
+        SYM(IDirectSoundBuffer_SetNotificationPositions), SYM(IDirectSoundBuffer_SetPitch), SYM(IDirectSoundBuffer_SetLFO), SYM(IDirectSoundBuffer_SetMode), SYM(IDirectSoundBuffer_SetRolloffFactor),
         SYM(IDirectSoundBuffer_GetStatus), SYM(IDirectSoundBuffer_GetCurrentPosition), SYM(IDirectSoundBuffer_SetCurrentPosition),
         SYM(IDirectSoundBuffer_Lock), SYM(IDirectSoundBuffer_SetVolume), SYM(IDirectSoundBuffer_SetFrequency),
         SYM(IDirectSoundBuffer_SetFilter), SYM(IDirectSoundBuffer_SetHeadroom), SYM(IDirectSoundBuffer_SetMixBinVolumes),
@@ -856,7 +864,7 @@ static void AuditExports() {
         SYM(CDirectSoundStream_SetFrequency), SYM(CDirectSoundStream_SetFilter), SYM(CDirectSoundStream_SetHeadroom),
         SYM(CDirectSoundStream_SetMixBinVolumes), SYM(CDirectSoundStream_SetMixBins), SYM(CDirectSoundStream_SetMaxDistance),
         SYM(CDirectSoundStream_SetMinDistance), SYM(CDirectSoundStream_SetPosition), SYM(CDirectSoundStream_SetVelocity),
-        SYM(CDirectSoundStream_SetI3DL2Source), SYM(IDirectSoundStream_SetEG)};
+        SYM(CDirectSoundStream_SetI3DL2Source), SYM(IDirectSoundStream_SetEG), SYM(CDirectSoundStream_SetLFO)};
     std::string left;
     // the library's own section: the WMA decoder shares the export ids and touches no DSOUND object
     uint32_t lo = 0, hi = 0;
@@ -1115,6 +1123,7 @@ BUFFER(Pause, 2) {
 }
 // envelopes are not played
 BUFFER(SetEG, 2) { return 0; }
+BUFFER(SetLFO, 2) { return 0; }
 // (this, start, length) in bytes, 0 length plays to the end. The loop becomes the whole region.
 BUFFER(SetPlayRegion, 3) {
     if (a[1] > v.bytes || a[2] > v.bytes - a[1]) return 0x88780032u;  // DSERR_INVALIDCALL
@@ -1366,6 +1375,7 @@ STREAM(SetPitch, 2) {
     return 0;
 }
 STREAM(SetFilter, 2) { return 0; }
+STREAM(SetLFO, 2) { return 0; }
 // the library's own writes voice registers a host stream does not have; envelopes are not played
 HLE_STDCALL(IDirectSoundStream_SetEG, 2) { return 0; }
 STREAM(SetHeadroom, 2) {

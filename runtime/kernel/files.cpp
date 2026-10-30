@@ -104,6 +104,7 @@ struct File : Object {
     size_t next = 0;
     bool listed = false;
     bool delete_on_close = false;
+    bool async = false;  // opened without FILE_SYNCHRONOUS_IO_*: a read reports STATUS_PENDING as on the console
     std::mutex io;  // threads sharing a handle: seek and transfer stay together
     File() : Object(ObjType::File) {}
     ~File() override {
@@ -322,6 +323,7 @@ uint32_t OpenOnDiscImpl(const Disc::Entry* e, const std::string& name, uint32_t 
     f->xbox = Normalize(name);
     f->entry = e;
     f->dir = e->dir;
+    f->async = !(options & 0x30);
     W32(handle_out, NewHandle(f));
     IoStatus(iosb, kSuccess, 1);
     LOG_FIRST(400, "open %s", name.c_str());
@@ -463,6 +465,7 @@ KERNEL_EXPORT(190, NtCreateFile, 9) {
     f->xbox = Normalize(name);
     f->fp = fp;
     f->delete_on_close = options & 0x1000;  // FILE_DELETE_ON_CLOSE
+    f->async = !(options & 0x30);
     W32(handle_out, NewHandle(f));
     IoStatus(iosb, kSuccess, info);
     LOG_FIRST(400, "open %s", name.c_str());
@@ -492,7 +495,7 @@ KERNEL_EXPORT(202, NtOpenFile, 6) {
         if (!f->fp) f->fp = std::fopen(host.c_str(), "rb");
         if (!f->fp) return kAccessDenied;
     }
-    (void)options;
+    f->async = !(options & 0x30);
     W32(handle_out, NewHandle(f));
     IoStatus(iosb, kSuccess, 1);
     return kSuccess;
@@ -539,7 +542,9 @@ static uint32_t Transfer(const Args& a, bool write, uint32_t pages) {
     f->pos = pos + n;
     if (write && n < len) return Finish(*f, 0xC000007F, n, event, apc, apc_ctx, iosb);  // disk full
     if (!write && len && !n) return Finish(*f, kEndOfFile, 0, event, apc, apc_ctx, iosb);
-    return Finish(*f, kSuccess, n, event, apc, apc_ctx, iosb);
+    uint32_t status = Finish(*f, kSuccess, n, event, apc, apc_ctx, iosb);
+    // the block is already complete; some titles read the byte count only from GetOverlappedResult, which they reach on STATUS_PENDING
+    return !write && f->async ? uint32_t(kPending) : status;
 }
 
 KERNEL_EXPORT(219, NtReadFile, 8) { return Transfer(a, false, 0); }
