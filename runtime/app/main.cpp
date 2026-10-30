@@ -10,6 +10,7 @@
 #include <timeapi.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <csignal>
 #include <cwchar>
@@ -223,11 +224,22 @@ uint32_t RefreshRate() {
 
 }  // namespace
 
-void Pace() {
+namespace {
+std::atomic<uint32_t> g_engine_fps{0};
+}  // namespace
+
+void SetEngineFps(uint32_t fps) { g_engine_fps = fps; }
+
+void Pace(uint32_t interval) {
     using clock = std::chrono::steady_clock;
     static clock::time_point next = clock::now();
     uint32_t cap = Get().fps_cap;
     if (cap == kFpsCapRefresh) cap = RefreshRate();
+    // the cap is the user's: 0 leaves the frame rate unlimited, otherwise the console's rate holds it back
+    if (cap) {
+        uint32_t console = g_engine_fps ? g_engine_fps.load() : 60 / std::clamp<uint32_t>(interval, 1, 4);
+        cap = std::min(cap, console);
+    }
     auto now = clock::now();
     if (!cap) {
         next = now;

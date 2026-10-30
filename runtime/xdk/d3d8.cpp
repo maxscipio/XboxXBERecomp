@@ -131,6 +131,7 @@ std::unordered_map<uint32_t, std::shared_ptr<gpu::VertexShader>> g_vs;
 std::unordered_map<uint32_t, std::shared_ptr<gpu::PixelShader>> g_ps;
 std::array<uint32_t, 3> g_buffers{};  // front, back surfaces
 uint32_t g_buffer_count = 2;
+uint32_t g_interval = 1;  // vertical blanks a frame stays up: 1 for ONE (and IMMEDIATE), 2 for TWO, 3 for THREE
 uint32_t g_depth = 0;
 uint32_t g_scratch_push = 0, g_scratch_size = 0;
 uint32_t g_walk = 0;  // first scratch command not read yet
@@ -268,6 +269,7 @@ void SetFrameBuffers(const char* caller, uint32_t pp) {
     uint32_t auto_depth = R32(pp + 0x20), depth_fmt = R32(pp + 0x24), interval = R32(pp + 0x30);
     if (!w) w = 640;
     if (!h) h = 480;
+    g_interval = (interval & 7) == 4 ? 3 : std::clamp<uint32_t>(interval & 7, 1, 2);
     LOGI("d3d: %s %ux%u format %X buffers %u depth %u format %X interval %X flags %X", caller, w, h, fmt, count,
          auto_depth, depth_fmt, interval, R32(pp + 0x28));
     uint32_t color_fmt = gpu::LinearColorFormat(fmt);
@@ -634,7 +636,7 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
     }
     Walk(Dev(kDevPush));  // reports asked for at the end of the frame
     if (g_backend) g_backend->Present(SurfaceOf(g_buffers[1]));
-    app::Pace();
+    app::Pace(g_interval);
     // like the XDK, the surfaces stay put and their memory rotates: titles keep back buffer pointers and copy its data
     uint32_t last = g_buffers[g_buffer_count - 1], data = R32(last + 4), lk = R32(last + 8);
     for (uint32_t i = g_buffer_count - 1; i > 0; i--) {
@@ -1486,14 +1488,32 @@ HLE_STDCALL(D3DDevice_EndPush, 1) {
 }
 
 // (push buffer, fixup): its commands run as EndPush runs a title's, after the ones pushed before it. D3DPushBuffer is
-// Common, Data, Lock, Size; the library runs Size less its last dword.
+// Common, Data, Lock, Size; the library runs Size less its last dword. D3DFixup is Common, Data, Lock, Run, Next: from Data
+// plus Run come records of byte count, offset into the push buffer and that many bytes, ended by a count of -1, which the
+// library patches into a copy of the commands. Here they go into the buffer for the run and the original comes back after.
 HLE_STDCALL(D3DDevice_RunPushBuffer, 2) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     uint32_t data = R32(a[0] + 4), size = R32(a[0] + 12);
     LOG_FIRST(8, "d3d: RunPushBuffer %08X, %u bytes, first command %08X", data, size, size ? R32(data) : 0);
-    if (a[1]) LOG_FIRST(1, "d3d: RunPushBuffer fixups are not applied");
     Walk(Dev(kDevPush));
+    std::vector<std::pair<uint32_t, uint32_t>> saved;
+    if (a[1] && size >= 4) {
+        for (uint32_t rec = R32(a[1] + 4) + R32(a[1] + 12);;) {
+            uint32_t bytes = R32(rec), offset = R32(rec + 4);
+            if (bytes == 0xFFFFFFFF) break;
+            if (bytes % 4 || offset % 4 || offset + bytes > size) {
+                LOG_FIRST(8, "d3d: RunPushBuffer fixup record of %u bytes at %X is outside the %u bytes", bytes, offset, size);
+                break;
+            }
+            for (uint32_t i = 0; i < bytes; i += 4) {
+                saved.emplace_back(data + offset + i, R32(data + offset + i));
+                W32(data + offset + i, R32(rec + 8 + i));
+            }
+            rec += 8 + bytes;
+        }
+    }
     if (size >= 4) RunCommands(data, data + size - 4);
+    for (auto it = saved.rbegin(); it != saved.rend(); ++it) W32(it->first, it->second);
     return 0;
 }
 

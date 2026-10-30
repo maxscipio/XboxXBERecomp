@@ -102,7 +102,9 @@ struct GameInfo {
 };
 extern const GameInfo kGame;
 
-// sleeps out the rest of the frame for the fps cap
-void Pace();
+// sleeps out the rest of the frame for the fps cap and for the console's pace: the swap interval counts vertical
+// blanks of the 60 Hz the console ran at (2 is 30 frames a second); a title's own frame rate, when set, replaces it
+void Pace(uint32_t interval = 1);
+void SetEngineFps(uint32_t fps);
 
 }  // namespace app
