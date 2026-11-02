@@ -945,7 +945,8 @@ public:
     void Clear(const State& s, uint32_t count, const uint8_t* rects, uint32_t flags, uint32_t color, float z,
                uint32_t stencil) override;
     void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) override;
-    void Copy(const Surface& src, const Surface& dst, uint32_t count, uint32_t src_rects, uint32_t dst_points) override;
+    void Copy(const Surface& src, const Surface& dst, uint32_t count, uint32_t src_rects, uint32_t dst_points,
+              float src_kx, float src_ky) override;
     void Present(const Surface& front, bool show) override;
     void WaitGpuFrame(uint64_t n) override;
     void Sync(uint32_t data, uint32_t size) override;
@@ -2918,7 +2919,9 @@ void VulkanBackend::CopyByRegion(Tgt& src_t, Tgt& dst_t, uint32_t count, uint32_
 }
 
 void VulkanBackend::Copy(const Surface& src, const Surface& dst, uint32_t count, uint32_t src_rects,
-                         uint32_t dst_points) {
+                         uint32_t dst_points, float src_kx, float src_ky) {
+    // a multisampled or scaled-down frame buffer would need a scaled copy, which this region copy does not do
+    if (src_kx != 1 || src_ky != 1) LOG_FIRST(4, "vulkan: CopyRects of a scaled frame buffer (%.2f x %.2f) is copied unscaled", src_kx, src_ky);
     Tgt* src_t = FindTarget(src, false);
     // pixels the CPU made: the copy happens in memory, textures and targets pick it up from there
     if (!src_t || !src_t->drawn) {
