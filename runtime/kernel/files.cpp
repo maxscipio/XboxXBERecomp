@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <thread>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -195,9 +196,13 @@ std::string ObjectName(uint32_t attrs, uint32_t* root = nullptr) {
     return ReadAnsiString(R32(attrs + 4));
 }
 
-void Complete(uint32_t event, uint32_t apc, uint32_t apc_ctx, uint32_t iosb) {
+void Complete(uint32_t event, uint32_t apc, uint32_t apc_ctx, uint32_t iosb, bool defer = false) {
     if (event)
-        if (ObjectRef e = FromHandle(event)) SetEvent(*e);
+        if (ObjectRef e = FromHandle(event)) {
+            // a real overlapped read signals after the call returns; titles clear the event right after issuing the read
+            if (defer) std::thread([e] { std::this_thread::sleep_for(std::chrono::milliseconds(1)); SetEvent(*e); }).detach();
+            else SetEvent(*e);
+        }
     if (apc && Current()) QueueApc(*Current(), apc, apc_ctx, iosb, 0);
 }
 
@@ -549,7 +554,8 @@ KERNEL_EXPORT(202, NtOpenFile, 6) {
 
 // I/O completes before the call returns: the status block is written, then the file object, the event and the
 // APC are signalled (GetOverlappedResult without an event waits on the file handle)
-static uint32_t Finish(File& f, uint32_t status, uint32_t n, uint32_t event, uint32_t apc, uint32_t apc_ctx, uint32_t iosb) {
+static uint32_t Finish(File& f, uint32_t status, uint32_t n, uint32_t event, uint32_t apc, uint32_t apc_ctx, uint32_t iosb,
+                       bool defer = false) {
     IoTrace('I', f.xbox, n, status);
     // as NT's I/O manager: a request that fails at once with an error status leaves the status block alone and neither
     // signals nor queues anything. Forza Motorsport primes a second overlapped read past the end of a small file and
@@ -557,7 +563,7 @@ static uint32_t Finish(File& f, uint32_t status, uint32_t n, uint32_t event, uin
     if ((status & 0xC0000000) == 0xC0000000) return status;
     IoStatus(iosb, status, n);
     SetEvent(f);
-    Complete(event, apc, apc_ctx, iosb);
+    Complete(event, apc, apc_ctx, iosb, defer);
     return status;
 }
 
@@ -595,7 +601,7 @@ static uint32_t Transfer(const Args& a, bool write, uint32_t pages) {
         LOG_FIRST(64, "read at end of file: %s at %llu, %u bytes", f->xbox.c_str(), (unsigned long long)pos, len);
         return Finish(*f, kEndOfFile, 0, event, apc, apc_ctx, iosb);
     }
-    uint32_t status = Finish(*f, kSuccess, n, event, apc, apc_ctx, iosb);
+    uint32_t status = Finish(*f, kSuccess, n, event, apc, apc_ctx, iosb, !write && f->async);
     // the block is already complete; some titles read the byte count only from GetOverlappedResult, which they reach on STATUS_PENDING
     return !write && f->async ? uint32_t(kPending) : status;
 }

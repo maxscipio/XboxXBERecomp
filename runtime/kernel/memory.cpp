@@ -67,6 +67,8 @@ bool Init() {
         LOGE("memory: could not reserve the 4 GB guest space");
         return false;
     }
+    // some title heap walkers read one header past the end of physical memory
+    Commit(kContiguousBase + kPhysicalSize, 0x10000);
     LOGI("memory: guest space at %p", static_cast<void*>(g_base));
     return true;
 }
