@@ -990,19 +990,6 @@ bool RecordConstants(uint32_t reg, uint32_t src, uint32_t dwords) {
 
 void SetConstants(uint32_t reg, uint32_t src, uint32_t count) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
-    if (reg <= 158 && reg + count > 158) { // TMP
-        const float* f = reinterpret_cast<const float*>(HostPtr(src + (158 - reg) * 16));
-        static int n = 0;
-        static float prev[4];
-        if (std::memcmp(prev, f, 16) != 0 && n++ < 60) {
-            LOGR("TMP c158 reg %u count %u src %08X rec %d: %g %g %g %g", reg, count, src, int((Dev(XDK_CDevice_Flags) & 4) != 0), f[0], f[1], f[2], f[3]);
-            for (uint32_t k : {0u, 1u, 2u, 30u, 31u}) {
-                const float* e = reinterpret_cast<const float*>(HostPtr(0x20A430 + 12 * k));
-                LOGR("TMP fogtab[%u] %g %g %g", k, e[0], e[1], e[2]);
-            }
-        }
-        std::memcpy(prev, f, 16);
-    }
     if (RecordConstants(reg, src, count * 4)) return;
     for (uint32_t i = 0; i < count && reg + i < 192; i++) std::memcpy(g_state.vsc[reg + i].data(), HostPtr(src + i * 16), 16);
 }
@@ -1499,10 +1486,6 @@ bool ApplyConstant(uint32_t m, uint32_t v) {
     }
     if (m < kConstantData || m >= kConstantDataEnd) return false;
     if (g_constant_register < kConstantRegisters) {
-        if (g_constant_register == 158) { // TMP
-            static int n = 0;
-            if (n++ < 80) LOGR("TMP apply c158[%u] = %08X (%g)", g_constant_component, v, *reinterpret_cast<float*>(&v));
-        }
         std::memcpy(&g_state.vsc[g_constant_register][g_constant_component], &v, 4);
     }
     if (++g_constant_component == 4) {
@@ -1607,7 +1590,7 @@ static void RunCommands(uint32_t begin, uint32_t end) {
                 vertices.clear();
                 ApplyImmediate(m, v);
             } else if ((m >= kArrayOffsets && m < kArrayFormatsEnd) || (m >= kArrayDraws && m < kInlineArray)) {
-                { static int nv = 0; if (nv++ < 20) LOGR("TMP pushed commands draw from vertex arrays (method %04X)", m); }
+                LOG_FIRST(16, "d3d: pushed commands draw from vertex arrays (method %04X), which is not run", m);
             } else if (!ApplyConstant(m, v) && !ApplyImmediate(m, v) && m >> 2 < g_state.simple.size()) {
                 SetSimple(m, v);
             }
@@ -1630,8 +1613,7 @@ HLE_STDCALL(D3DDevice_EndPush, 1) {
 HLE_STDCALL(D3DDevice_RunPushBuffer, 2) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     uint32_t data = R32(a[0] + 4), size = R32(a[0] + 12);
-    { static std::set<uint32_t> seen; static int tot = 0; tot++; if (size != 1676 && seen.insert(size).second) { uint32_t draws = 0; for (uint32_t p = data; p + 4 <= data + size;) { uint32_t head = R32(p); uint32_t n = (head >> 18) & 0x7FF; uint32_t m = head & 0x1FFC; if ((head & 0xA0030003) || !n) { p += 4; continue; } if (m == 0x17FC || (m >= 0x1800 && m < 0x1820)) draws++; p += 4 + n * 4; } LOGR("TMP RunPushBuffer NEWSIZE %08X, %u bytes (run #%d), draw-method headers %u", data, size, tot, draws); } if (tot % 500 == 0) LOGR("TMP RunPushBuffer total %d", tot); } // TMP
-    { static int d = 0; if (d++ < 0) { for (uint32_t p = data; p + 4 <= data + size;) { uint32_t head = R32(p); uint32_t n = (head >> 18) & 0x7FF; LOGR("TMP pb +%X head %08X method %04X n %u first %08X", p - data, head, head & 0x1FFC, n, n ? R32(p + 4) : 0); if ((head & 0xA0030003) || !n) { p += 4; continue; } p += 4 + n * 4; } } } // TMP
+    LOG_FIRST(8, "d3d: RunPushBuffer %08X, %u bytes, first command %08X", data, size, size ? R32(data) : 0);
     Walk(Dev(kDevPush));
     std::vector<std::pair<uint32_t, uint32_t>> saved;
     if (a[1] && size >= 4) {
