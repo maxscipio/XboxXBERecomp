@@ -21,7 +21,9 @@ set(SDL_RENDER OFF CACHE BOOL "" FORCE)
 set(SDL_GPU OFF CACHE BOOL "" FORCE)
 set(SDL_CAMERA OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(SDL3 GIT_REPOSITORY https://github.com/libsdl-org/SDL.git GIT_TAG release-3.4.16 GIT_SHALLOW TRUE)
-FetchContent_MakeAvailable(zydis tomlplusplus imgui SDL3)
+# the Vulkan backend's memory allocator, a single header: fetched without its CMake project
+FetchContent_Declare(vma GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git GIT_TAG v3.1.0 GIT_SHALLOW TRUE SOURCE_SUBDIR none)
+FetchContent_MakeAvailable(zydis tomlplusplus imgui SDL3 vma)
 
 # What the game needs to build its code on the player's PC (runtime/app/game_code.cpp), beside the executables: the
 # recompiler, clang and lld from the toolchain building this, the game's configs, the XDK layouts they include and the
@@ -70,7 +72,15 @@ set(XBE_IMGUI_SOURCES
     ${imgui_SOURCE_DIR}/imgui_tables.cpp
     ${imgui_SOURCE_DIR}/imgui_widgets.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp
-    ${imgui_SOURCE_DIR}/backends/imgui_impl_dx12.cpp)
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_dx12.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp)
+
+# The Vulkan backend (runtime/gpu/vulkan.cpp) links the loader and compiles guest shaders to SPIR-V with DXC, loaded at
+# run time from dxcompiler.dll (staged beside the executable, or taken from the SDK's Bin)
+if(NOT DEFINED ENV{VULKAN_SDK})
+    message(FATAL_ERROR "VULKAN_SDK is not set: install the LunarG Vulkan SDK")
+endif()
+set(XBE_VULKAN_SDK $ENV{VULKAN_SDK})
 
 file(GLOB XBE_RUNTIME_SOURCES CONFIGURE_DEPENDS ${XBE_SDK_DIR}/runtime/*/*.cpp)
 # SDL's headers go to the input code alone (it is linked LINK_ONLY)
@@ -114,10 +124,13 @@ function(add_xbe_image target xbe config partitions game_dir)
     # the import library of what the executable exports to its DLL goes to the compiler folder
     set_target_properties(${target} PROPERTIES ENABLE_EXPORTS ON ARCHIVE_OUTPUT_DIRECTORY ${XBE_COMPILER_DIR})
     target_include_directories(${target} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${XBE_SDK_DIR}/runtime ${GEN})
-    target_include_directories(${target} SYSTEM PRIVATE ${imgui_SOURCE_DIR})
+    target_include_directories(${target} SYSTEM PRIVATE ${imgui_SOURCE_DIR} ${XBE_VULKAN_SDK}/Include ${vma_SOURCE_DIR}/include)
     target_compile_options(${target} PRIVATE -fno-strict-aliasing)
-    target_compile_definitions(${target} PRIVATE UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS)
-    target_link_libraries(${target} PRIVATE tomlplusplus::tomlplusplus $<LINK_ONLY:SDL3::SDL3-static> d3d12 dxgi dxguid d3dcompiler xaudio2 ole32 windowscodecs dbghelp winmm dwmapi ws2_32)
+    target_compile_definitions(${target} PRIVATE UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS VK_USE_PLATFORM_WIN32_KHR)
+    target_link_libraries(${target} PRIVATE tomlplusplus::tomlplusplus $<LINK_ONLY:SDL3::SDL3-static> d3d12 dxgi dxguid d3dcompiler xaudio2 ole32 windowscodecs dbghelp winmm dwmapi ws2_32 ${XBE_VULKAN_SDK}/Lib/vulkan-1.lib)
+    add_custom_command(TARGET ${target} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${XBE_VULKAN_SDK}/Bin/dxcompiler.dll $<TARGET_FILE_DIR:${target}>
+        VERBATIM)
     target_link_libraries(${target} PRIVATE ${GEN}/code.lib delayimp)
     target_link_options(${target} PRIVATE -fuse-ld=lld -g -Wl,/delayload:${target}.dll)
 

@@ -55,7 +55,10 @@ private:
     uint32_t fence_ = 0;
 };
 
+// XBE_BACKEND=vulkan|d3d12 picks one (Direct3D 12 by default); the others are what each backend file provides
 std::unique_ptr<Backend> CreateBackend();
+std::unique_ptr<Backend> CreateD3D12Backend();
+std::unique_ptr<Backend> CreateVulkanBackend();
 // the same backend driven from a thread of its own: calls return once recorded
 std::unique_ptr<Backend> CreateThreadedBackend(std::unique_ptr<Backend> inner);
 

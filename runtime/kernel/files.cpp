@@ -645,17 +645,17 @@ KERNEL_EXPORT(218, NtQueryVolumeInformationFile, 5) {
     uint32_t iosb = a[1], out = a[2], len = a[3], cls = a[4];
     std::memset(HostPtr(out), 0, len);
     switch (cls) {
-        case 3:  // FileFsSizeInformation: 16 GiB total, 8 GiB free in 16 KiB units
-            W64(out, 0x100000);
-            W64(out + 8, 0x80000);
+        case 3:  // FileFsSizeInformation: 2 GiB total, 1 GiB free in 16 KiB units (titles multiply blocks by 16 KiB in 32 bits)
+            W64(out, 0x20000);
+            W64(out + 8, 0x10000);
             W32(out + 0x10, 32);
             W32(out + 0x14, 512);
             IoStatus(iosb, kSuccess, 0x18);
             return kSuccess;
         case 7:  // FileFsFullSizeInformation
-            W64(out, 0x100000);
-            W64(out + 8, 0x80000);
-            W64(out + 0x10, 0x80000);
+            W64(out, 0x20000);
+            W64(out + 8, 0x10000);
+            W64(out + 0x10, 0x10000);
             W32(out + 0x18, 32);
             W32(out + 0x1C, 512);
             IoStatus(iosb, kSuccess, 0x20);
