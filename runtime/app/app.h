@@ -27,6 +27,7 @@ struct Settings {
     bool custom_textures = true;     // images in textures\replacement\ beside the exe replace the game's
     bool dump_textures = false;      // each texture once into textures\dumps\ beside the exe
     uint32_t texture_dump_format = 0;  // 0 PNG, 1 DDS
+    uint32_t aspect = 0;             // 0 from the output's shape, 1 4:3, 2 16:9 (kAspects)
     std::string join_ip;                   // co-op: a host past the LAN the system link search also asks
 };
 
@@ -42,8 +43,10 @@ struct Mode {
 Mode Desktop();
 Mode Output();
 float RenderScale(uint32_t guest_height);
-// the output is 3:2 or wider: the console reports a widescreen TV and the frame is shown 16:9, else 4:3 as on a 4:3 TV
+// the output is 3:2 or wider, or the aspect setting asks for 16:9: the console reports a widescreen TV and the frame is
+// shown 16:9, else 4:3 as on a 4:3 TV. A title reads the TV's shape once, at boot.
 bool Widescreen();
+inline constexpr const char* kAspects[] = {"auto", "4:3", "16:9"};
 
 std::filesystem::path ExeDir();
 // the game in assets (game_files.cpp): its folder and this executable's xbe, from the extracted files or a disc
