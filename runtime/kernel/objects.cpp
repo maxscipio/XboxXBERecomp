@@ -59,7 +59,9 @@ struct Queued {
     void Remove() {
         if (!on) return;
         for (auto& o : objs) {
-            if (o) std::erase(o->waiters, &w);
+            if (!o) continue;
+            std::erase(o->waiters, &w);
+            if (o->type == ObjType::Mutant) Wake(*o);  // the next in line may be the one to take it
         }
         std::erase(g_waiters, &w);
         on = false;
@@ -178,8 +180,10 @@ static uint32_t Me() {
     return t ? t->ethread : 1;
 }
 
-static bool Satisfied(Object& o, uint32_t me) {
-    if (o.type == ObjType::Mutant) return o.signal > 0 || o.owner == me;
+// A mutant going free is handed to the longest blocked wait, as the console's dispatcher does; without that, a thread that
+// releases and re-takes it in a loop starves the others.
+static bool Satisfied(Object& o, uint32_t me, const Waiter* w) {
+    if (o.type == ObjType::Mutant) return o.owner == me || (o.signal > 0 && (o.waiters.empty() || o.waiters.front() == w));
     return o.signal > 0;
 }
 
@@ -231,14 +235,14 @@ static uint32_t WaitFor(const std::vector<ObjectRef>& objs, bool wait_all, int64
     Queued queued{objs};
     for (;;) {
         if (wait_all) {
-            bool all = std::all_of(objs.begin(), objs.end(), [&](const ObjectRef& o) { return o && Satisfied(*o, me); });
+            bool all = std::all_of(objs.begin(), objs.end(), [&](const ObjectRef& o) { return o && Satisfied(*o, me, &queued.w); });
             if (all) {
                 for (auto& o : objs) Consume(*o, me);
                 return kWait0;
             }
         } else {
             for (size_t i = 0; i < objs.size(); i++)
-                if (objs[i] && Satisfied(*objs[i], me)) {
+                if (objs[i] && Satisfied(*objs[i], me, &queued.w)) {
                     Consume(*objs[i], me);
                     return kWait0 + uint32_t(i);
                 }

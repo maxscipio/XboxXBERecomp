@@ -50,6 +50,7 @@ void Load() {
     s.fps_cap = t["fps_cap"].value_or(s.fps_cap);
     s.vsync = t["vsync"].value_or(s.vsync);
     s.aniso = t["anisotropic_filtering"].value_or(s.aniso);
+    s.shader_cache = t["shader_cache"].value_or(s.shader_cache);
     s.custom_textures = t["custom_textures"].value_or(s.custom_textures);
     s.dump_textures = t["dump_textures"].value_or(s.dump_textures);
     s.texture_dump_format = std::min(t["texture_dump_format"].value_or(s.texture_dump_format), 1u);
@@ -72,6 +73,7 @@ toml::table Table() {
                   {"fps_cap", int64_t(s.fps_cap)},
                   {"vsync", s.vsync},
                   {"anisotropic_filtering", int64_t(s.aniso)},
+                  {"shader_cache", s.shader_cache},
                   {"custom_textures", s.custom_textures},
                   {"dump_textures", s.dump_textures},
                   {"texture_dump_format", int64_t(s.texture_dump_format)},

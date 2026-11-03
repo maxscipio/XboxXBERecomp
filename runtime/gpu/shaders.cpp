@@ -32,6 +32,7 @@ struct VOut {
     float4 tc2 : TEXCOORD2;
     float4 tc3 : TEXCOORD3;
     float fogamt : TEXCOORD4;
+    float psize : TEXCOORD6;
 };
 cbuffer VC : register(b0) { float4 c[192]; };
 cbuffer DC : register(b1) {
@@ -54,7 +55,9 @@ const char* kCommonTail = R"(    float4 spread[4];
     float4 amb;
     float4 lt[56];
     float4 rtshift;
+    float4 ptsz;
     float4 zparams;
+    float4 vdef[16];
 };
 )";
 
@@ -92,7 +95,15 @@ float4 ilu_lit(float4 s) {
     float spec = exp2(clamp(s.w, -cap, cap) * log2(max(s.y, 0)));
     return float4(1, diffuse, diffuse > 0 ? spec : 0, 1);
 }
+// bit tests: the compiler may fold isnan and isinf away
+bool4 is_nan(float4 v) { return (asuint(v) & 0x7FFFFFFF) > 0x7F800000; }
+bool is_inf(float v) { return (asuint(v) & 0x7FFFFFFF) == 0x7F800000; }
+// the console's rasterizer takes a NaN color component as 1 where saturate would give 0 (Otogi's lighting)
+float4 color_out(float4 v) { return saturate(is_nan(v) ? 1 : v); }
+// a NaN or infinite fog coordinate, as an unset game table entry gives, is no fog in the linear and exp modes, all
+// fog in exp2
 float fogfactor(float d) {
+    if (is_nan(d.xxxx).x || is_inf(d)) return fogp.w == 2 ? 0 : 1;
     if (fogp.w == 3) return (fogp.y - d) / (fogp.y - fogp.x);
     if (fogp.w == 1) return exp(-d * fogp.z);
     if (fogp.w == 2) return exp(-(d * fogp.z) * (d * fogp.z));
@@ -133,7 +144,7 @@ std::string Src(const Tok& k, int which, uint16_t regs) {
         base = reg == 12 ? "oPos" : F("R%u", reg);
     } else if (mux == 2) {
         uint32_t v = k.f(1, 9, 4);
-        base = (regs >> v) & 1 ? F("i.v%u", v) : (v == 3 ? "float4(1,1,1,1)" : "float4(0,0,0,1)");
+        base = (regs >> v) & 1 ? F("i.v%u", v) : F("vdef[%u]", v);
     } else {
         uint32_t cr = k.f(1, 13, 8);
         base = k.f(3, 1, 1) ? F("c[clamp(a0 + %u, 0, 191)]", cr) : F("c[%u]", cr);
@@ -233,15 +244,16 @@ const char* kVsEpilogue = R"(
     q.xyz *= p.w;
     q.w = p.w;
     o.pos = q;
-    o.d0 = saturate(oD0);
-    o.d1 = saturate(oD1);
-    o.b0 = saturate(oB0);
-    o.b1 = saturate(oB1);
+    o.d0 = color_out(oD0);
+    o.d1 = color_out(oD1);
+    o.b0 = color_out(oB0);
+    o.b1 = color_out(oB1);
     o.tc0 = oT0;
     o.tc1 = oT1;
     o.tc2 = oT2;
     o.tc3 = oT3;
     o.fogamt = fogfactor(oFog.x);
+    o.psize = oPts.x;
     return o;
 }
 )";
@@ -251,7 +263,7 @@ const char* kVsPrologue = R"(
     // precise: EQUAL depth passes need bit exact positions
     precise float4 R0 = 0, R1 = 0, R2 = 0, R3 = 0, R4 = 0, R5 = 0, R6 = 0, R7 = 0, R8 = 0, R9 = 0, R10 = 0, R11 = 0;
     precise float4 oPos = 0;
-    float4 oD0 = float4(0, 0, 0, 1), oD1 = 0, oB0 = float4(0, 0, 0, 1), oB1 = 0, oFog = 0, oPts = 1;
+    float4 oD0 = float4(0, 0, 0, 1), oD1 = 0, oB0 = float4(0, 0, 0, 1), oB1 = 0, oFog = 0, oPts = ptsz.y;
     float4 oT0 = float4(0, 0, 0, 1), oT1 = float4(0, 0, 0, 1), oT2 = float4(0, 0, 0, 1), oT3 = float4(0, 0, 0, 1);
 )";
 
@@ -848,8 +860,8 @@ std::string FixedVertexHlsl(uint16_t regs, bool pretransformed, uint64_t decode,
     if (surf.w == 0 && abs(sp.x - (surf.x - 0.5)) < 1e-3) cp.x = cp.w;
     if (surf.w == 0 && abs(sp.y - (surf.y - 0.5)) < 1e-3) cp.y = -cp.w;
     o.pos = cp;
-    o.d0 = saturate(oD0);
-    o.d1 = saturate(oD1);
+    o.d0 = color_out(oD0);
+    o.d1 = color_out(oD1);
     o.b0 = o.d0;
     o.b1 = o.d1;
     o.tc0 = oT0;
@@ -857,6 +869,7 @@ std::string FixedVertexHlsl(uint16_t regs, bool pretransformed, uint64_t decode,
     o.tc2 = oT2;
     o.tc3 = oT3;
     o.fogamt = fogfactor(abs(cp.z));
+    o.psize = ptsz.y;
     return o;
 }
 )";
@@ -995,18 +1008,26 @@ std::string ReversedDepthHlsl(std::string s) {
     return s;
 }
 
-// a point covers its console pixel, several host pixels on an upscaled target: drawn as a quad of that size
+// a point covers its console pixels (its size, one by default), several host pixels on an upscaled target: drawn as a
+// quad of that size, with sprite texture coordinates when D3DRS_POINTSPRITEENABLE is set
 std::string PointHlsl() {
     return Common() + R"(
 [maxvertexcount(4)]
 void main(point VOut v[1], inout TriangleStream<VOut> strip) {
-    float2 half_pixel = v[0].pos.w / surf.xy;  // in clip units, the target spans 2 across surf.xy pixels
+    float size = v[0].psize;
+    if (ptsz.w > 0) size = clamp(size, ptsz.z, ptsz.w);
+    size = max(size, 1);
+    float2 half_pixel = size * v[0].pos.w / surf.xy;  // in clip units, the target spans 2 across surf.xy pixels
     // a target is read half a host pixel back (surf.w host pixels per console pixel): left and top reach that far
-    float2 back = (0.5 - 1e-3) * 2 * half_pixel / surf.w;
+    float2 back = (0.5 - 1e-3) * 2 * (v[0].pos.w / surf.xy) / surf.w;
     for (int i = 0; i < 4; i++) {
         VOut o = v[0];
         o.pos.x += (i & 1) ? half_pixel.x : -half_pixel.x - back.x;
         o.pos.y += (i & 2) ? -half_pixel.y : half_pixel.y + back.y;
+        if (ptsz.x != 0) {
+            float4 uv = float4(i & 1, (i >> 1) & 1, 0, 1);
+            o.tc0 = o.tc1 = o.tc2 = o.tc3 = uv;
+        }
         strip.Append(o);
     }
 }

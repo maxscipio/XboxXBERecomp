@@ -222,9 +222,20 @@ public:
         Cmd c{Op::GetReport};
         c.a = report;
         cur_->cmds.push_back(c);
+        reports_unflushed_ = true;
     }
 
-    uint32_t Fence() override { return uint32_t(cur_->id); }
+    // A title that polls a visibility test (D3D_SetFence in its loop) while it waits for a report would wait for
+    // the Present that delivers it, which only the same thread issues: the batch goes out and the GPU runs it now.
+    uint32_t Fence() override {
+        uint32_t id = uint32_t(cur_->id);
+        if (reports_unflushed_) {
+            reports_unflushed_ = false;
+            cur_->cmds.push_back(Cmd{Op::Flush});
+            Submit();
+        }
+        return id;
+    }
     bool FencePending(uint32_t fence) override { return fence > done_.load(); }
     void WaitFence(uint32_t fence) override { Wait(fence, WaitFor::Fence, "fence"); }
     bool Busy(uint32_t resource) override {
@@ -494,6 +505,7 @@ private:
     std::unordered_set<uint32_t> written_;  // surfaces drawn since their last read-back, by data address
     std::unordered_set<uint64_t> logged_;   // perf diagnostic: read-backs named once, by address and kind
     uint64_t next_id_ = 0, last_present_ = 0;
+    bool reports_unflushed_ = false;  // a GetReport that no Flush has followed
     uint64_t presents_ = 0;
 
     // the render thread

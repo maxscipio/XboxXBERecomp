@@ -23,6 +23,7 @@ struct Settings {
     uint32_t fps_cap = 60;           // 0 unlimited, kFpsCapRefresh the monitor's refresh rate
     bool vsync = true;
     uint32_t aniso = 0;              // 0 as the game asks
+    bool shader_cache = true;        // compiled shaders and pipelines kept in <exe dir>/shader_cache for the next run
     bool custom_textures = true;     // images in textures\replacement\ beside the exe replace the game's
     bool dump_textures = false;      // each texture once into textures\dumps\ beside the exe
     uint32_t texture_dump_format = 0;  // 0 PNG, 1 DDS
@@ -101,7 +102,9 @@ struct GameInfo {
 };
 extern const GameInfo kGame;
 
-// sleeps out the rest of the frame for the fps cap
-void Pace();
+// sleeps out the rest of the frame for the fps cap and for the console's pace: the swap interval counts vertical
+// blanks of the 60 Hz the console ran at (2 is 30 frames a second); a title's own frame rate, when set, replaces it
+void Pace(uint32_t interval = 1);
+void SetEngineFps(uint32_t fps);
 
 }  // namespace app

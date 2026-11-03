@@ -21,6 +21,32 @@ std::map<std::string, std::string> g_links;    // upper case "\??\D:" -> "\Devic
 std::map<std::string, fs::path> g_devices;     // upper case device -> host directory
 constexpr char kCdRom[] = "\\DEVICE\\CDROM0";
 
+// The last file calls (O open, M missing or refused, I transfer, X bad handle), for F3 to place a stall.
+struct IoEvent {
+    int64_t ms;
+    uint32_t a, b;
+    char kind;
+    char text[40];
+};
+constexpr uint32_t kIoEvents = 256;
+IoEvent g_io_events[kIoEvents];
+uint32_t g_io_count = 0;
+std::mutex g_io_lock;
+int64_t IoNowMs() {
+    using namespace std::chrono;
+    return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
+void IoTrace(char kind, const std::string& name, uint32_t a, uint32_t b) {
+    std::lock_guard<std::mutex> lock(g_io_lock);
+    IoEvent& e = g_io_events[g_io_count++ % kIoEvents];
+    e.ms = IoNowMs();
+    e.a = a;
+    e.b = b;
+    e.kind = kind;
+    size_t from = name.size() > sizeof(e.text) - 1 ? name.size() - (sizeof(e.text) - 1) : 0;
+    std::snprintf(e.text, sizeof(e.text), "%s", name.c_str() + from);
+}
+
 std::string Upper(std::string s) {
     for (char& c : s) c = char(std::toupper(uint8_t(c)));
     return s;
@@ -78,6 +104,7 @@ struct File : Object {
     size_t next = 0;
     bool listed = false;
     bool delete_on_close = false;
+    bool async = false;  // opened without FILE_SYNCHRONOUS_IO_*: a read reports STATUS_PENDING as on the console
     std::mutex io;  // threads sharing a handle: seek and transfer stay together
     File() : Object(ObjType::File) {}
     ~File() override {
@@ -277,8 +304,8 @@ Target Resolve(const std::string& xbox_path, uint32_t root_handle) {
 }
 
 // the disc image is read only: nothing on it is created, replaced or written
-uint32_t OpenOnDisc(const Disc::Entry* e, const std::string& name, uint32_t handle_out, uint32_t iosb, uint32_t disposition,
-                    uint32_t options) {
+uint32_t OpenOnDiscImpl(const Disc::Entry* e, const std::string& name, uint32_t handle_out, uint32_t iosb, uint32_t disposition,
+                        uint32_t options) {
     if (!e && (disposition == 1 || disposition == 4)) {  // FILE_OPEN or FILE_OVERWRITE need an existing file
         LOG_FIRST(200, "missing %s", name.c_str());
         IoStatus(iosb, kObjectNameNotFound, 5);
@@ -296,13 +323,33 @@ uint32_t OpenOnDisc(const Disc::Entry* e, const std::string& name, uint32_t hand
     f->xbox = Normalize(name);
     f->entry = e;
     f->dir = e->dir;
+    f->async = !(options & 0x30);
     W32(handle_out, NewHandle(f));
     IoStatus(iosb, kSuccess, 1);
     LOG_FIRST(400, "open %s", name.c_str());
     return kSuccess;
 }
 
+uint32_t OpenOnDisc(const Disc::Entry* e, const std::string& name, uint32_t handle_out, uint32_t iosb, uint32_t disposition,
+                    uint32_t options) {
+    uint32_t r = OpenOnDiscImpl(e, name, handle_out, iosb, disposition, options);
+    IoTrace(r == kSuccess ? 'O' : 'M', name, r, r == kSuccess ? R32(handle_out) : 0);
+    return r;
+}
+
 }  // namespace
+
+void DumpFiles() {
+    std::lock_guard<std::mutex> lock(g_io_lock);
+    int64_t now = IoNowMs();
+    LOGR("files: last calls, newest last (ms ago, O open/M refused with status and handle, I transfer with bytes and "
+         "status, X bad handle)");
+    uint32_t n = std::min(g_io_count, 64u);
+    for (uint32_t i = g_io_count - n; i < g_io_count; i++) {
+        const IoEvent& e = g_io_events[i % kIoEvents];
+        LOGR("  -%lld %c %X %X %s", (long long)(now - e.ms), e.kind, e.a, e.b, e.text);
+    }
+}
 
 std::string ResolvePath(const std::string& xbox_path, uint32_t root_handle) { return Resolve(xbox_path, root_handle).host; }
 
@@ -418,6 +465,7 @@ KERNEL_EXPORT(190, NtCreateFile, 9) {
     f->xbox = Normalize(name);
     f->fp = fp;
     f->delete_on_close = options & 0x1000;  // FILE_DELETE_ON_CLOSE
+    f->async = !(options & 0x30);
     W32(handle_out, NewHandle(f));
     IoStatus(iosb, kSuccess, info);
     LOG_FIRST(400, "open %s", name.c_str());
@@ -447,7 +495,7 @@ KERNEL_EXPORT(202, NtOpenFile, 6) {
         if (!f->fp) f->fp = std::fopen(host.c_str(), "rb");
         if (!f->fp) return kAccessDenied;
     }
-    (void)options;
+    f->async = !(options & 0x30);
     W32(handle_out, NewHandle(f));
     IoStatus(iosb, kSuccess, 1);
     return kSuccess;
@@ -456,6 +504,7 @@ KERNEL_EXPORT(202, NtOpenFile, 6) {
 // I/O completes before the call returns: the status block is written, then the file object, the event and the
 // APC are signalled (GetOverlappedResult without an event waits on the file handle)
 static uint32_t Finish(File& f, uint32_t status, uint32_t n, uint32_t event, uint32_t apc, uint32_t apc_ctx, uint32_t iosb) {
+    IoTrace('I', f.xbox, n, status);
     IoStatus(iosb, status, n);
     SetEvent(f);
     Complete(event, apc, apc_ctx, iosb);
@@ -471,7 +520,10 @@ static uint64_t Offset(File& f, uint32_t off) {
 static uint32_t Transfer(const Args& a, bool write, uint32_t pages) {
     uint32_t h = a[0], event = a[1], apc = a[2], apc_ctx = a[3], iosb = a[4], buf = a[5], len = a[6], off = a[7];
     auto f = FileFromHandle(h);
-    if (!f || (!f->fp && !f->entry)) return kInvalidHandle;
+    if (!f || (!f->fp && !f->entry)) {
+        IoTrace('X', "", h, 0);
+        return kInvalidHandle;
+    }
     if (write && f->entry) return kAccessDenied;
     ResetEvent(*f);
     std::lock_guard<std::mutex> lock(f->io);
@@ -490,7 +542,9 @@ static uint32_t Transfer(const Args& a, bool write, uint32_t pages) {
     f->pos = pos + n;
     if (write && n < len) return Finish(*f, 0xC000007F, n, event, apc, apc_ctx, iosb);  // disk full
     if (!write && len && !n) return Finish(*f, kEndOfFile, 0, event, apc, apc_ctx, iosb);
-    return Finish(*f, kSuccess, n, event, apc, apc_ctx, iosb);
+    uint32_t status = Finish(*f, kSuccess, n, event, apc, apc_ctx, iosb);
+    // the block is already complete; some titles read the byte count only from GetOverlappedResult, which they reach on STATUS_PENDING
+    return !write && f->async ? uint32_t(kPending) : status;
 }
 
 KERNEL_EXPORT(219, NtReadFile, 8) { return Transfer(a, false, 0); }
@@ -632,7 +686,8 @@ KERNEL_EXPORT(207, NtQueryDirectoryFile, 10) {
         LOG_FIRST(8, "NtQueryDirectoryFile: class %u", cls);
         return kInvalidParameter;
     }
-    std::string pat = mask ? ReadAnsiString(mask) : "*";
+    std::string pat = mask ? ReadAnsiString(mask) : "";
+    if (pat.empty()) pat = "*";  // a null or empty FileName lists everything
     if (!f->listed || (restart & 0xFF)) {
         f->entries.clear();
         f->disc_entries.clear();

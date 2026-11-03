@@ -12,7 +12,7 @@
 #include <atomic>
 #include <chrono>
 #include <map>
-#include <thread>
+#include <set>#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -81,6 +81,10 @@ bool InCode(uint32_t va);  // cpu/dispatch.cpp
 #define SYM_D3D_BlockOnNonSurfaceResource FFFFFE0A
 #define HAS_D3D_BlockOnNonSurfaceResource 0
 #endif
+#ifndef SYM_D3DDevice_DrawIndexedVerticesUP
+#define SYM_D3DDevice_DrawIndexedVerticesUP FFFFFE0B
+#define HAS_D3DDevice_DrawIndexedVerticesUP 0
+#endif
 
 namespace d3d {
 
@@ -127,6 +131,7 @@ std::unordered_map<uint32_t, std::shared_ptr<gpu::VertexShader>> g_vs;
 std::unordered_map<uint32_t, std::shared_ptr<gpu::PixelShader>> g_ps;
 std::array<uint32_t, 3> g_buffers{};  // front, back surfaces
 uint32_t g_buffer_count = 2;
+uint32_t g_interval = 1;  // vertical blanks a frame stays up: 1 for ONE (and IMMEDIATE), 2 for TWO, 3 for THREE
 uint32_t g_depth = 0;
 uint32_t g_scratch_push = 0, g_scratch_size = 0;
 uint32_t g_walk = 0;  // first scratch command not read yet
@@ -207,11 +212,18 @@ uint32_t NewSurface(uint32_t w, uint32_t h, uint32_t fmt, uint32_t bpp) {
     return hdr;
 }
 
+// The render states as the hardware last got them. The library pushes a state at a draw only when it changed since
+// the draw before (its lazy flush), so a recording buffer holds just those and the rest comes from the device when it
+// runs: titles record a model once and set its fog and lights before every RunPushBuffer (Otogi's sky and fog).
+constexpr uint32_t kRecordingFlag = 4;  // device flags bit 2, set by BeginPushBuffer
+decltype(gpu::State::rs) g_flushed_rs{};
+
 void SyncDeferred() {
     // deferred states live in the title's memory, the inline SetRenderState and SetTextureStageState write them
     for (uint32_t i = gpu::kRsDeferredFirst; i < gpu::kRsComplexFirst; i++) g_state.rs[i] = R32(kRenderState + i * 4);
     for (int s = 0; s < 4; s++)
         for (uint32_t i = 0; i < gpu::kTssBumpEnvMat00; i++) g_state.tss[s][i] = R32(kTextureState + (s * kStageStates + i) * 4);
+    if (!(Dev(XDK_CDevice_Flags) & kRecordingFlag)) g_flushed_rs = g_state.rs;
 }
 
 float ZScale(const gpu::Surface& zs) {
@@ -264,6 +276,7 @@ void SetFrameBuffers(const char* caller, uint32_t pp) {
     uint32_t auto_depth = R32(pp + 0x20), depth_fmt = R32(pp + 0x24), interval = R32(pp + 0x30);
     if (!w) w = 640;
     if (!h) h = 480;
+    g_interval = (interval & 7) == 4 ? 3 : std::clamp<uint32_t>(interval & 7, 1, 2);
     LOGI("d3d: %s %ux%u format %X buffers %u depth %u format %X interval %X flags %X", caller, w, h, fmt, count,
          auto_depth, depth_fmt, interval, R32(pp + 0x28));
     uint32_t color_fmt = gpu::LinearColorFormat(fmt);
@@ -414,9 +427,9 @@ HLE_STDCALL(D3D_BlockOnResource, 1) {
                 LOGI("d3d: BlockOnResource on surface %08X, stack %08X %08X %08X %08X", data, code[0], code[1], code[2], code[3]);
             }
             g_backend->Sync(data, 0);
-        } else {
-            g_backend->WaitResource(res);
         }
+        // the GPU may still be reading it too: draws recorded with this resource must finish before the title writes it
+        g_backend->WaitResource(res);
     }
     gpu::MarkDirty(res);
     return 0;
@@ -425,6 +438,11 @@ HLE_STDCALL(D3D_BlockOnResource, 1) {
 // title may read what the GPU drew
 HLE_WRAP(Lock2DSurface, 6) {
     uint32_t res = a[0];
+    if (!(a[5] & 0x20) && res && g_backend) {  // a CPU write must wait for draws still sampling the texture
+        std::lock_guard<std::recursive_mutex> lock(g_lock);
+        g_backend->WaitResource(res);
+        gpu::MarkDirty(res);
+    }
     if ((a[5] & 0x20) && res && g_backend) {  // D3DLOCK_NOOVERWRITE
         std::lock_guard<std::recursive_mutex> lock(g_lock);
         g_backend->SyncLate(mem::VirtualFromPhysical(R32(res + 4)));
@@ -625,7 +643,7 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
     }
     Walk(Dev(kDevPush));  // reports asked for at the end of the frame
     if (g_backend) g_backend->Present(SurfaceOf(g_buffers[1]));
-    app::Pace();
+    app::Pace(g_interval);
     // like the XDK, the surfaces stay put and their memory rotates: titles keep back buffer pointers and copy its data
     uint32_t last = g_buffers[g_buffer_count - 1], data = R32(last + 4), lk = R32(last + 8);
     for (uint32_t i = g_buffer_count - 1; i > 0; i--) {
@@ -898,6 +916,8 @@ HLE_STDCALL(D3DDevice_CreateVertexShader, 4) {
     uint32_t rec = mem::AllocSystem(16, 16);
     vs->handle = rec | 1;
     g_vs[vs->handle] = vs;
+    // the inlined GetVertexShaderSize reads the instruction count here, games chain load slots with it
+    W32(rec + 8, uint32_t(vs->program.size() / 4));
     W32(out, vs->handle);
     LOG_FIRST(64, "d3d: vertex shader %08X, %zu decl tokens, %zu instructions, type %X", vs->handle, vs->decl.size(),
               vs->program.size() / 4, vs->program_type);
@@ -947,27 +967,62 @@ HLE_STDCALL(D3DDevice_SetVertexShader, 1) {
     return 0;
 }
 
+// While a push buffer records (BeginPushBuffer sets bit 2 of the device flags) the library writes the constant load and
+// the data into the buffer, and a title's fixups patch those words later; the constants are not set until it runs.
+bool RecordConstants(uint32_t reg, uint32_t src, uint32_t dwords) {
+    constexpr uint32_t kConstantLoad = 0x1EA4, kConstantData = 0x0B80, kMaxRun = 16;
+    if (!(Dev(XDK_CDevice_Flags) & kRecordingFlag)) return false;
+    uint32_t p = Dev(kDevPush);
+    W32(p, 1 << 18 | kConstantLoad);
+    W32(p + 4, reg);
+    p += 8;
+    for (uint32_t done = 0; done < dwords;) {
+        uint32_t n = std::min(dwords - done, kMaxRun);
+        W32(p, n << 18 | kConstantData);
+        for (uint32_t i = 0; i < n; i++) W32(p + 4 + i * 4, R32(src + (done + i) * 4));
+        p += 4 + n * 4;
+        done += n;
+    }
+    SetDev(kDevPush, p);
+    return true;
+}
+
+void SetConstants(uint32_t reg, uint32_t src, uint32_t count) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    if (reg <= 158 && reg + count > 158) { // TMP
+        const float* f = reinterpret_cast<const float*>(HostPtr(src + (158 - reg) * 16));
+        static int n = 0;
+        static float prev[4];
+        if (std::memcmp(prev, f, 16) != 0 && n++ < 60) {
+            LOGR("TMP c158 reg %u count %u src %08X rec %d: %g %g %g %g", reg, count, src, int((Dev(XDK_CDevice_Flags) & 4) != 0), f[0], f[1], f[2], f[3]);
+            for (uint32_t k : {0u, 1u, 2u, 30u, 31u}) {
+                const float* e = reinterpret_cast<const float*>(HostPtr(0x20A430 + 12 * k));
+                LOGR("TMP fogtab[%u] %g %g %g", k, e[0], e[1], e[2]);
+            }
+        }
+        std::memcpy(prev, f, 16);
+    }
+    if (RecordConstants(reg, src, count * 4)) return;
+    for (uint32_t i = 0; i < count && reg + i < 192; i++) std::memcpy(g_state.vsc[reg + i].data(), HostPtr(src + i * 16), 16);
+}
+
 HLE_FASTCALL(D3DDevice_SetVertexShaderConstant1Fast, 0) {
-    uint32_t reg = a[0];
-    if (reg < 192) std::memcpy(g_state.vsc[reg].data(), HostPtr(a[1]), 16);
+    SetConstants(a[0], a[1], 1);
     return 0;
 }
 
 HLE_FASTCALL(D3DDevice_SetVertexShaderConstant1, 0) {
-    uint32_t reg = a[0];
-    if (reg < 192) std::memcpy(g_state.vsc[reg].data(), HostPtr(a[1]), 16);
+    SetConstants(a[0], a[1], 1);
     return 0;
 }
 
 HLE_FASTCALL(D3DDevice_SetVertexShaderConstant4, 0) {
-    uint32_t reg = a[0], src = a[1];
-    for (uint32_t i = 0; i < 4 && reg + i < 192; i++) std::memcpy(g_state.vsc[reg + i].data(), HostPtr(src + i * 16), 16);
+    SetConstants(a[0], a[1], 4);
     return 0;
 }
 
 HLE_FASTCALL(D3DDevice_SetVertexShaderConstantNotInlineFast, 1) {
-    uint32_t reg = a[0], src = a[1], dwords = a[2];
-    for (uint32_t i = 0; i < dwords / 4 && reg + i < 192; i++) std::memcpy(g_state.vsc[reg + i].data(), HostPtr(src + i * 16), 16);
+    SetConstants(a[0], a[1], a[2] / 4);
     return 0;
 }
 
@@ -1179,8 +1234,84 @@ HLE_STDCALL(D3DDevice_SetPixelShaderConstant, 3) {
 
 // drawing
 
+// A draw made while a push buffer records is not drawn: the library would write it into the buffer, with the vertex
+// arrays and index elements it reads. Here the draw and the bindings it reads are kept, and a no-operation method with
+// a marker and the draw's number goes into the buffer, where RunCommands finds it and draws it from the bindings it had.
+namespace {
+constexpr uint32_t kNopMethod = 0x0100, kDrawMarker = 0x4F544744;
+struct RecordedDraw {
+    uint32_t prim, start, count;
+    std::vector<uint8_t> indices;
+    std::array<gpu::State::Stream, 16> streams;
+    uint32_t vs_handle, index_buffer, index_data, base_vertex;
+    std::shared_ptr<gpu::VertexShader> vs;
+    std::shared_ptr<gpu::PixelShader> ps;
+    // the states the library writes into a recording buffer, which here reach g_state as they are set
+    decltype(gpu::State::tss) tss;
+    std::vector<std::pair<uint32_t, uint32_t>> rs;  // render states changed since the draw before, as the library pushes
+    decltype(gpu::State::textures) textures;
+    decltype(gpu::State::palettes) palettes;
+    decltype(gpu::State::material) material;
+    decltype(gpu::State::lights) lights;
+    uint32_t light_enable;
+};
+std::vector<RecordedDraw> g_recorded_draws;
+// the render states the recorded draws of the running buffer pushed so far, over the device's
+std::vector<std::pair<uint32_t, uint32_t>> g_run_rs;
+
+bool RecordDraw(X86Context& ctx, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) {
+    if (!(Dev(XDK_CDevice_Flags) & kRecordingFlag)) return false;
+    SyncDeferred();  // the inline states are in the title's memory, which changes before the buffer runs
+    RecordedDraw d{prim, start, count, {}, g_state.streams, g_state.vs_handle, g_state.index_buffer, g_state.index_data,
+                   g_state.base_vertex, g_state.vs, g_state.ps, g_state.tss, {}, g_state.textures,
+                   g_state.palettes, g_state.material, g_state.lights, g_state.light_enable};
+    for (uint32_t i = 0; i < g_state.rs.size(); i++)
+        if (g_state.rs[i] != g_flushed_rs[i]) d.rs.emplace_back(i, g_state.rs[i]);
+    g_flushed_rs = g_state.rs;
+    if (indices) d.indices.assign(indices, indices + count * 2);
+    for (auto& s : d.streams)
+        if (s.vb) AddRef(ctx, s.vb);
+    for (uint32_t t : d.textures)
+        if (t) AddRef(ctx, t);
+    if (d.index_buffer) AddRef(ctx, d.index_buffer);
+    uint32_t id = uint32_t(g_recorded_draws.size());
+    g_recorded_draws.push_back(std::move(d));
+    LOG_FIRST(8, "d3d: recorded draw %u of prim %u, %u vertices%s", id, prim, count, indices ? " indexed" : "");
+    uint32_t p = Dev(kDevPush);
+    W32(p, 2 << 18 | kNopMethod);
+    W32(p + 4, kDrawMarker);
+    W32(p + 8, id);
+    SetDev(kDevPush, p + 12);
+    return true;
+}
+
+void ReplayDraw(uint32_t id) {
+    if (id >= g_recorded_draws.size() || !g_backend) return;
+    const RecordedDraw& d = g_recorded_draws[id];
+    SyncDeferred();  // the states the title set for this run
+    g_run_rs.insert(g_run_rs.end(), d.rs.begin(), d.rs.end());
+    gpu::State s = g_state;
+    s.streams = d.streams;
+    s.vs = d.vs;
+    s.ps = d.ps;
+    s.vs_handle = d.vs_handle;
+    s.index_buffer = d.index_buffer;
+    s.index_data = d.index_data;
+    s.base_vertex = d.base_vertex;
+    s.tss = d.tss;
+    for (auto [r, v] : g_run_rs) s.rs[r] = v;
+    s.textures = d.textures;
+    s.palettes = d.palettes;
+    s.material = d.material;
+    s.lights = d.lights;
+    s.light_enable = d.light_enable;
+    g_backend->Draw(s, d.prim, d.start, d.count, d.indices.empty() ? nullptr : d.indices.data());
+}
+}  // namespace
+
 HLE_STDCALL(D3DDevice_DrawVertices, 3) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
+    if (RecordDraw(ctx, a[0], a[1], a[2], nullptr)) return 0;
     Walk(Dev(kDevPush));  // a visibility test begun since the last draw counts this one
     SyncDeferred();
     if (g_backend) g_backend->Draw(g_state, a[0], a[1], a[2], nullptr);
@@ -1189,9 +1320,10 @@ HLE_STDCALL(D3DDevice_DrawVertices, 3) {
 
 HLE_STDCALL(D3DDevice_DrawIndexedVertices, 3) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
+    const uint8_t* indices = a[2] ? static_cast<const uint8_t*>(HostPtr(a[2])) : nullptr;
+    if (RecordDraw(ctx, a[0], 0, a[1], indices)) return 0;
     Walk(Dev(kDevPush));
     SyncDeferred();
-    const uint8_t* indices = a[2] ? static_cast<const uint8_t*>(HostPtr(a[2])) : nullptr;
     if (g_backend) g_backend->Draw(g_state, a[0], 0, a[1], indices);
     return 0;
 }
@@ -1337,6 +1469,11 @@ bool ApplyImmediate(uint32_t m, uint32_t v) {
     } else {
         return false;
     }
+    {
+        size_t slot = size_t(a - g_im_attr) / 4;
+        std::memcpy(g_state.vattr[slot].data(), a, 16);
+        g_state.vattr_set |= uint16_t(1u << slot);
+    }
     if (!g_im_prim) return true;
     g_im_mask |= 1u << (a - g_im_attr) / 4;
     if (a == g_im_attr && last) g_im_vertices.insert(g_im_vertices.end(), g_im_attr, g_im_attr + 64);
@@ -1361,6 +1498,10 @@ bool ApplyConstant(uint32_t m, uint32_t v) {
     }
     if (m < kConstantData || m >= kConstantDataEnd) return false;
     if (g_constant_register < kConstantRegisters) {
+        if (g_constant_register == 158) { // TMP
+            static int n = 0;
+            if (n++ < 80) LOGR("TMP apply c158[%u] = %08X (%g)", g_constant_component, v, *reinterpret_cast<float*>(&v));
+        }
         std::memcpy(&g_state.vsc[g_constant_register][g_constant_component], &v, 4);
     }
     if (++g_constant_component == 4) {
@@ -1398,6 +1539,24 @@ HLE_STDCALL(D3DDevice_DrawVerticesUP, 4) {
     return 0;
 }
 
+// DrawIndexedVerticesUP(prim, index count, 16 bit indices, vertices, stride): the vertices up to the highest index go to
+// the ring as DrawVerticesUP's do, the backend copies the indices
+HLE_STDCALL(D3DDevice_DrawIndexedVerticesUP, 5) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));
+    uint32_t count = a[1], stride = a[4];
+    if (!g_backend || !count || !stride || !a[2] || !a[3]) return 0;
+    const uint16_t* indices = static_cast<const uint16_t*>(HostPtr(a[2]));
+    uint32_t top = 0;
+    for (uint32_t i = 0; i < count; i++) top = std::max<uint32_t>(top, indices[i]);
+    SyncDeferred();
+    auto stream = g_state.streams[0];
+    g_state.streams[0] = {UpVertices(HostPtr(a[3]), (top + 1) * stride), stride};
+    g_backend->Draw(g_state, a[0], 0, count, reinterpret_cast<const uint8_t*>(indices));
+    g_state.streams[0] = stream;
+    return 0;
+}
+
 // BeginPush(dwords) hands out room for raw hardware commands, EndPush(end) runs what the title wrote there:
 // a primitive between two begin/end writes with its vertices inline or as vertex data, other methods as simple states.
 HLE_STDCALL(D3DDevice_BeginPush, 1) {
@@ -1421,6 +1580,8 @@ static void RunCommands(uint32_t begin, uint32_t end) {
     constexpr uint32_t kArrayOffsets = 0x1720, kArrayFormatsEnd = 0x17A0, kArrayDraws = 0x1800;
     static std::vector<uint32_t> vertices;
     uint32_t prim = 0;
+    bool marked = false;
+    g_run_rs.clear();
     for (uint32_t p = begin; begin && p + 4 <= end;) {
         // count in bits 18 to 28, bit 30 keeps the method for every value
         uint32_t head = R32(p), method = head & 0x1FFC, n = (head >> 18) & 0x7FF;
@@ -1432,7 +1593,12 @@ static void RunCommands(uint32_t begin, uint32_t end) {
         for (uint32_t i = 0; i < n; i++, p += 4) {
             uint32_t m = head & 0x40000000 ? method : method + i * 4, v = R32(p);
             ApplyVisibilityMethod(m, v);
-            if (m == kInlineArray) {
+            if (marked) {
+                marked = false;
+                ReplayDraw(v);
+            } else if (head == (2u << 18 | kNopMethod) && i == 0 && v == kDrawMarker) {
+                marked = true;
+            } else if (m == kInlineArray) {
                 if (prim) vertices.push_back(v);
             } else if (m == kBeginEnd) {
                 if (!v && prim) DrawInline(prim, vertices);
@@ -1440,7 +1606,7 @@ static void RunCommands(uint32_t begin, uint32_t end) {
                 vertices.clear();
                 ApplyImmediate(m, v);
             } else if ((m >= kArrayOffsets && m < kArrayFormatsEnd) || (m >= kArrayDraws && m < kInlineArray)) {
-                LOG_FIRST(16, "d3d: pushed commands draw from vertex arrays (method %04X), which is not run", m);
+                { static int nv = 0; if (nv++ < 20) LOGR("TMP pushed commands draw from vertex arrays (method %04X)", m); }
             } else if (!ApplyConstant(m, v) && !ApplyImmediate(m, v) && m >> 2 < g_state.simple.size()) {
                 SetSimple(m, v);
             }
@@ -1457,14 +1623,33 @@ HLE_STDCALL(D3DDevice_EndPush, 1) {
 }
 
 // (push buffer, fixup): its commands run as EndPush runs a title's, after the ones pushed before it. D3DPushBuffer is
-// Common, Data, Lock, Size; the library runs Size less its last dword.
+// Common, Data, Lock, Size; the library runs Size less its last dword. D3DFixup is Common, Data, Lock, Run, Next: from Data
+// plus Run come records of byte count, offset into the push buffer and that many bytes, ended by a count of -1, which the
+// library patches into a copy of the commands. Here they go into the buffer for the run and the original comes back after.
 HLE_STDCALL(D3DDevice_RunPushBuffer, 2) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     uint32_t data = R32(a[0] + 4), size = R32(a[0] + 12);
-    LOG_FIRST(8, "d3d: RunPushBuffer %08X, %u bytes, first command %08X", data, size, size ? R32(data) : 0);
-    if (a[1]) LOG_FIRST(1, "d3d: RunPushBuffer fixups are not applied");
+    { static std::set<uint32_t> seen; static int tot = 0; tot++; if (size != 1676 && seen.insert(size).second) { uint32_t draws = 0; for (uint32_t p = data; p + 4 <= data + size;) { uint32_t head = R32(p); uint32_t n = (head >> 18) & 0x7FF; uint32_t m = head & 0x1FFC; if ((head & 0xA0030003) || !n) { p += 4; continue; } if (m == 0x17FC || (m >= 0x1800 && m < 0x1820)) draws++; p += 4 + n * 4; } LOGR("TMP RunPushBuffer NEWSIZE %08X, %u bytes (run #%d), draw-method headers %u", data, size, tot, draws); } if (tot % 500 == 0) LOGR("TMP RunPushBuffer total %d", tot); } // TMP
+    { static int d = 0; if (d++ < 0) { for (uint32_t p = data; p + 4 <= data + size;) { uint32_t head = R32(p); uint32_t n = (head >> 18) & 0x7FF; LOGR("TMP pb +%X head %08X method %04X n %u first %08X", p - data, head, head & 0x1FFC, n, n ? R32(p + 4) : 0); if ((head & 0xA0030003) || !n) { p += 4; continue; } p += 4 + n * 4; } } } // TMP
     Walk(Dev(kDevPush));
+    std::vector<std::pair<uint32_t, uint32_t>> saved;
+    if (a[1] && size >= 4) {
+        for (uint32_t rec = R32(a[1] + 4) + R32(a[1] + 12);;) {
+            uint32_t bytes = R32(rec), offset = R32(rec + 4);
+            if (bytes == 0xFFFFFFFF) break;
+            if (bytes % 4 || offset % 4 || offset + bytes > size) {
+                LOG_FIRST(8, "d3d: RunPushBuffer fixup record of %u bytes at %X is outside the %u bytes", bytes, offset, size);
+                break;
+            }
+            for (uint32_t i = 0; i < bytes; i += 4) {
+                saved.emplace_back(data + offset + i, R32(data + offset + i));
+                W32(data + offset + i, R32(rec + 8 + i));
+            }
+            rec += 8 + bytes;
+        }
+    }
     if (size >= 4) RunCommands(data, data + size - 4);
+    for (auto it = saved.rbegin(); it != saved.rend(); ++it) W32(it->first, it->second);
     return 0;
 }
 
