@@ -337,8 +337,8 @@ void SetFrameBuffers(const char* caller, uint32_t pp) {
             LOGE("d3d: renderer init failed");
             // no owner window: this runs on the title's thread and the window may already be fullscreen over the box
             MessageBoxW(nullptr,
-                        L"Direct3D 12 could not be started. Make sure your graphics card supports it and its driver "
-                        L"is up to date.",
+                        L"The graphics backend could not be started. Make sure your graphics card supports Vulkan 1.3 "
+                        L"(or Direct3D 12 with XBE_BACKEND=d3d12) and its driver is up to date.",
                         app::kGame.short_title, MB_ICONERROR | MB_TOPMOST);
             kernel::Shutdown(1);
         }

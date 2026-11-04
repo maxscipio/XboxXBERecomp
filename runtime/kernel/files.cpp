@@ -1,8 +1,10 @@
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <chrono>
 #include <thread>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -422,7 +424,7 @@ KERNEL_EXPORT(190, NtCreateFile, 9) {
     if (t.disc) return OpenOnDisc(t.entry, name, handle_out, iosb, disposition, options);
     const std::string& host = t.host;
     if (host.empty()) {
-        LOGW("NtCreateFile: no mapping for %s", name.c_str());
+        LOGE("NtCreateFile: no mapping for %s", name.c_str());
         IoStatus(iosb, kObjectPathNotFound, 0);
         return kObjectPathNotFound;
     }
@@ -510,7 +512,7 @@ KERNEL_EXPORT(190, NtCreateFile, 9) {
     FILE* fp = std::fopen(host.c_str(), mode);
     if (!fp && std::string(mode) == "r+b") fp = std::fopen(host.c_str(), "rb");  // read only media
     if (!fp) {
-        LOGW("NtCreateFile: cannot open %s mode=%s", host.c_str(), mode);
+        LOGE("NtCreateFile: cannot open %s mode=%s (errno %d: %s)", host.c_str(), mode, errno, std::strerror(errno));
         IoStatus(iosb, kAccessDenied, 0);
         return kAccessDenied;
     }
@@ -602,7 +604,10 @@ static uint32_t Transfer(const Args& a, bool write, uint32_t pages) {
         if (done < chunk) break;
     }
     f->pos = pos + n;
-    if (write && n < len) return Finish(*f, 0xC000007F, n, event, apc, apc_ctx, iosb);  // disk full
+    if (write && n < len) {
+        LOGE("NtWriteFile: short write %u of %u to %s (errno %d: %s)", n, len, f->host.string().c_str(), errno, std::strerror(errno));
+        return Finish(*f, 0xC000007F, n, event, apc, apc_ctx, iosb);  // disk full
+    }
     if (!write && len && !n) {
         LOG_FIRST(64, "read at end of file: %s at %llu, %u bytes", f->xbox.c_str(), (unsigned long long)pos, len);
         return Finish(*f, kEndOfFile, 0, event, apc, apc_ctx, iosb);

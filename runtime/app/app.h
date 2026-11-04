@@ -124,4 +124,9 @@ inline std::atomic<uint32_t> g_show_every{1};
 inline std::atomic<uint32_t> g_step_rate{0};
 inline std::atomic<uint32_t> g_show_every{1};
 
+// A title that steps its game once per Swap sets these (any thread): the steps per second Pace holds to instead of
+// the fps cap (0: the cap), and how many steps make one shown frame (1: every step is shown).
+inline std::atomic<uint32_t> g_step_rate{0};
+inline std::atomic<uint32_t> g_show_every{1};
+
 }  // namespace app
