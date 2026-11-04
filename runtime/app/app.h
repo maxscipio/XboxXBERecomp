@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <mutex>
@@ -26,6 +27,7 @@ struct Settings {
     bool custom_textures = true;     // images in textures\replacement\ beside the exe replace the game's
     bool dump_textures = false;      // each texture once into textures\dumps\ beside the exe
     uint32_t texture_dump_format = 0;  // 0 PNG, 1 DDS
+    bool shader_cache = true;        // compiled shaders and pipelines kept in <exe dir>/shader_cache for the next run
     std::string join_ip;                   // co-op: a host past the LAN the system link search also asks
 };
 
@@ -103,5 +105,10 @@ extern const GameInfo kGame;
 
 // sleeps out the rest of the frame for the fps cap
 void Pace();
+
+// A title that steps its game once per Swap sets these (any thread): the steps per second Pace holds to instead of
+// the fps cap (0: the cap), and how many steps make one shown frame (1: every step is shown).
+inline std::atomic<uint32_t> g_step_rate{0};
+inline std::atomic<uint32_t> g_show_every{1};
 
 }  // namespace app

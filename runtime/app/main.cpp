@@ -223,7 +223,7 @@ uint32_t RefreshRate() {
 void Pace() {
     using clock = std::chrono::steady_clock;
     static clock::time_point next = clock::now();
-    uint32_t cap = Get().fps_cap;
+    uint32_t cap = g_step_rate ? g_step_rate.load() : Get().fps_cap;
     if (cap == kFpsCapRefresh) cap = RefreshRate();
     auto now = clock::now();
     if (!cap) {

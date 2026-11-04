@@ -26,6 +26,7 @@ struct Config {
     std::string xbe_path;
     uint32_t title = 0, entry = 0;  // the image xbe_symbols wrote the config for, 0 = unchecked
     std::set<uint32_t> trace;       // functions whose calls and results are logged
+    std::set<uint32_t> setjmp;      // setjmp functions: the code after a call to one can resume through longjmp
     std::string out_dir;
     std::string library;  // the game code DLL, named in the generated exports.def
     std::vector<std::string> code_sections;
@@ -83,7 +84,7 @@ public:
     std::set<uint32_t> functions;
     std::unordered_map<uint32_t, JumpTable> jump_tables;  // keyed by jmp address
     std::unordered_map<uint32_t, Insn> insns_;
-    std::set<uint32_t> continuations;  // where C++ catch blocks resume, reached by the CRT's jmp eax
+    std::set<uint32_t> continuations;  // where C++ catch blocks and setjmp calls resume, reached by a jmp eax
 
     // body of a function: instruction addresses reachable without entering other entries
     std::vector<uint32_t> Body(uint32_t entry) const;
@@ -96,6 +97,7 @@ private:
     void Adopt(const std::vector<uint32_t>& calls, bool trusted);
     void GapFill();
     void EhContinuations();
+    void SetjmpContinuations();
     void MakeFunction(uint32_t va);
     bool ReadTable(uint32_t jmp_va, const ZydisDecodedOperand& mem, JumpTable& jt);
     bool SledTable(uint32_t jmp_va, const uint32_t* ring, int nring, JumpTable& jt);

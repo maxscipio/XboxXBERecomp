@@ -81,6 +81,10 @@ bool InCode(uint32_t va);  // cpu/dispatch.cpp
 #define SYM_D3D_BlockOnNonSurfaceResource FFFFFE0A
 #define HAS_D3D_BlockOnNonSurfaceResource 0
 #endif
+#ifndef SYM_D3DDevice_DrawIndexedVerticesUP
+#define SYM_D3DDevice_DrawIndexedVerticesUP FFFFFE0B
+#define HAS_D3DDevice_DrawIndexedVerticesUP 0
+#endif
 
 namespace d3d {
 
@@ -414,9 +418,9 @@ HLE_STDCALL(D3D_BlockOnResource, 1) {
                 LOGI("d3d: BlockOnResource on surface %08X, stack %08X %08X %08X %08X", data, code[0], code[1], code[2], code[3]);
             }
             g_backend->Sync(data, 0);
-        } else {
-            g_backend->WaitResource(res);
         }
+        // the GPU may still be reading it too: draws recorded with this resource must finish before the title writes it
+        g_backend->WaitResource(res);
     }
     gpu::MarkDirty(res);
     return 0;
@@ -425,6 +429,11 @@ HLE_STDCALL(D3D_BlockOnResource, 1) {
 // title may read what the GPU drew
 HLE_WRAP(Lock2DSurface, 6) {
     uint32_t res = a[0];
+    if (!(a[5] & 0x20) && res && g_backend) {  // a CPU write must wait for draws still sampling the texture
+        std::lock_guard<std::recursive_mutex> lock(g_lock);
+        g_backend->WaitResource(res);
+        gpu::MarkDirty(res);
+    }
     if ((a[5] & 0x20) && res && g_backend) {  // D3DLOCK_NOOVERWRITE
         std::lock_guard<std::recursive_mutex> lock(g_lock);
         g_backend->SyncLate(mem::VirtualFromPhysical(R32(res + 4)));
@@ -624,7 +633,11 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
         }
     }
     Walk(Dev(kDevPush));  // reports asked for at the end of the frame
-    if (g_backend) g_backend->Present(SurfaceOf(g_buffers[1]));
+    // a title shown at fewer frames than it steps (g_show_every > 1) shows one swap in that many
+    static uint32_t s_swaps = 0;
+    uint32_t every = app::g_show_every;
+    bool show = every <= 1 || s_swaps++ % every == 0;
+    if (g_backend) g_backend->Present(SurfaceOf(g_buffers[1]), show);
     app::Pace();
     // like the XDK, the surfaces stay put and their memory rotates: titles keep back buffer pointers and copy its data
     uint32_t last = g_buffers[g_buffer_count - 1], data = R32(last + 4), lk = R32(last + 8);
@@ -1395,6 +1408,24 @@ HLE_STDCALL(D3DDevice_DrawVerticesUP, 4) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     Walk(Dev(kDevPush));
     DrawUp(a[0], a[1], HostPtr(a[2]), a[3]);
+    return 0;
+}
+
+// DrawIndexedVerticesUP(prim, index count, 16 bit indices, vertices, stride): the vertices up to the highest index go to
+// the ring as DrawVerticesUP's do, the backend copies the indices
+HLE_STDCALL(D3DDevice_DrawIndexedVerticesUP, 5) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));
+    uint32_t count = a[1], stride = a[4];
+    if (!g_backend || !count || !stride || !a[2] || !a[3]) return 0;
+    const uint16_t* indices = static_cast<const uint16_t*>(HostPtr(a[2]));
+    uint32_t top = 0;
+    for (uint32_t i = 0; i < count; i++) top = std::max<uint32_t>(top, indices[i]);
+    SyncDeferred();
+    auto stream = g_state.streams[0];
+    g_state.streams[0] = {UpVertices(HostPtr(a[3]), (top + 1) * stride), stride};
+    g_backend->Draw(g_state, a[0], 0, count, reinterpret_cast<const uint8_t*>(indices));
+    g_state.streams[0] = stream;
     return 0;
 }
 

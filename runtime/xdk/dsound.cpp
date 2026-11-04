@@ -85,6 +85,22 @@ X86Func* Find(uint32_t guest);
 #define SYM_IDirectSoundBuffer_SetEG FFFFFF0E
 #define HAS_IDirectSoundBuffer_SetEG 0
 #endif
+#ifndef SYM_IDirectSoundBuffer_SetRolloffFactor
+#define SYM_IDirectSoundBuffer_SetRolloffFactor FFFFFF12
+#define HAS_IDirectSoundBuffer_SetRolloffFactor 0
+#endif
+#ifndef SYM_IDirectSoundBuffer_SetMode
+#define SYM_IDirectSoundBuffer_SetMode FFFFFF11
+#define HAS_IDirectSoundBuffer_SetMode 0
+#endif
+#ifndef SYM_IDirectSoundBuffer_SetPitch
+#define SYM_IDirectSoundBuffer_SetPitch FFFFFF10
+#define HAS_IDirectSoundBuffer_SetPitch 0
+#endif
+#ifndef SYM_IDirectSoundBuffer_SetNotificationPositions
+#define SYM_IDirectSoundBuffer_SetNotificationPositions FFFFFF0F
+#define HAS_IDirectSoundBuffer_SetNotificationPositions 0
+#endif
 
 namespace {
 
@@ -125,8 +141,16 @@ struct Gains {
     float bin[kRows][kBins];
 };
 
+// DSBPOSITIONNOTIFY: the event is set when the play cursor passes the byte offset
+struct Note {
+    uint32_t offset, event;
+};
+constexpr uint32_t kOffsetStop = 0xFFFFFFFF;  // DSBPN_OFFSETSTOP: set when the buffer stops
+constexpr uint32_t kMaxNotes = 64;
+
 struct Voice {
     uint32_t obj = 0;
+    std::vector<Note> notes;
     bool stream = false;
     int refs = 1;
     // format
@@ -151,7 +175,7 @@ struct Voice {
     std::vector<float> curve;  // rolloff
     bool is3d = false;
     uint32_t mode = 0;  // DS3DMODE: 1 head relative, 2 disabled
-    float p[3] = {}, min_dist = 1, max_dist = 1e9f;
+    float p[3] = {}, min_dist = 1, max_dist = 1e9f, rolloff = 1;
     Gains gain = {};  // the last block's gains, the next block ramps from them
     bool has_gain = false;
     // a mono 3D voice's interaural delay in samples and its recent samples
@@ -393,7 +417,7 @@ void ShareCentre(Place& at) {
 // distance attenuation, 1.0 inside the min distance: min / distance, or the voice's rolloff curve
 float Attenuation(const Voice& v, float dist) {
     if (dist <= v.min_dist) return 1;
-    if (v.curve.empty()) return v.min_dist / std::min(dist, v.max_dist);
+    if (v.curve.empty()) return v.min_dist / (v.min_dist + v.rolloff * (std::min(dist, v.max_dist) - v.min_dist));
     if (v.max_dist <= v.min_dist) return 1;
     // points spread evenly from min to max distance, 1.0 at min
     float at = (std::min(dist, v.max_dist) - v.min_dist) / (v.max_dist - v.min_dist) * v.curve.size();
@@ -607,13 +631,36 @@ void MixVoice(Voice& v, float* bins, uint32_t frames) {
     v.itd = itd;
 }
 
+void Signal(uint32_t handle) {
+    if (ObjectRef e = FromHandle(handle)) SetEvent(*e);
+}
+
+// sets the events of the notifications the cursor passed while the block played from `before`
+void Notify(Voice& v, double before, bool was_playing) {
+    bool stopped = was_playing && !v.playing;
+    double base = FramesOf(v, v.play_start);
+    double from = base + before, to = base + (stopped ? double(FramesOf(v, v.play_len)) : v.pos);
+    bool wrapped = !stopped && to < from;
+    for (const Note& n : v.notes) {
+        if (n.offset == kOffsetStop) {
+            if (stopped) Signal(n.event);
+            continue;
+        }
+        double f = FramesOf(v, n.offset);
+        if (wrapped ? (f > from || f <= to) : (f > from && f <= to)) Signal(n.event);
+    }
+}
+
 void Render(float* out, uint32_t frames) {
     static std::vector<float> bins;  // the output thread alone renders
     bins.assign(size_t(frames) * kBins, 0.0f);
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     for (auto& [obj, v] : g_voices) {
         if (v.paused || v.sync || (!v.stream && !v.playing)) continue;
+        double before = v.pos;
+        bool was_playing = v.playing;
         MixVoice(v, bins.data(), frames);
+        if (!v.stream && !v.notes.empty()) Notify(v, before, was_playing);
     }
     if (dsp::Loaded()) dsp::Run(bins.data(), frames);
     for (uint32_t i = 0; i < frames; i++) {
@@ -743,6 +790,7 @@ static void AuditExports() {
         SYM(XAudioDownloadEffectsImage), SYM(DirectSoundCreateBuffer), SYM(IDirectSound_CreateSoundBuffer),
         SYM(IDirectSoundBuffer_Release), SYM(IDirectSoundBuffer_Unlock), SYM(IDirectSoundBuffer_SetBufferData),
         SYM(IDirectSoundBuffer_Play), SYM(IDirectSoundBuffer_Stop), SYM(IDirectSoundBuffer_SetLoopRegion),
+        SYM(IDirectSoundBuffer_SetNotificationPositions), SYM(IDirectSoundBuffer_SetPitch), SYM(IDirectSoundBuffer_SetMode), SYM(IDirectSoundBuffer_SetRolloffFactor),
         SYM(IDirectSoundBuffer_GetStatus), SYM(IDirectSoundBuffer_GetCurrentPosition), SYM(IDirectSoundBuffer_SetCurrentPosition),
         SYM(IDirectSoundBuffer_Lock), SYM(IDirectSoundBuffer_SetVolume), SYM(IDirectSoundBuffer_SetFrequency),
         SYM(IDirectSoundBuffer_SetFilter), SYM(IDirectSoundBuffer_SetHeadroom), SYM(IDirectSoundBuffer_SetMixBinVolumes),
@@ -978,7 +1026,17 @@ BUFFER(Play, 4) {
     return 0;
 }
 BUFFER(Stop, 1) {
+    bool was_playing = v.playing;
     v.playing = false;
+    if (was_playing)
+        for (const Note& n : v.notes)
+            if (n.offset == kOffsetStop) Signal(n.event);
+    return 0;
+}
+// (this, count, DSBPOSITIONNOTIFY array): replaces the notifications, none clears them
+BUFFER(SetNotificationPositions, 3) {
+    v.notes.clear();
+    for (uint32_t i = 0; a[2] && i < std::min(a[1], kMaxNotes); i++) v.notes.push_back({R32(a[2] + i * 8), R32(a[2] + i * 8 + 4)});
     return 0;
 }
 // (this, time low, time high, flags): stops now, the release envelope is not reproduced
@@ -1042,6 +1100,20 @@ BUFFER(SetVolume, 2) {
 }
 BUFFER(SetFrequency, 2) {
     v.freq = a[1];
+    return 0;
+}
+BUFFER(SetPitch, 2) {
+    // 1/4096 octave steps relative to the 48 kHz mixer rate
+    v.freq = uint32_t(audio::kRate * std::exp2(double(int32_t(a[1])) / 4096.0));
+    return 0;
+}
+BUFFER(SetMode, 3) {
+    v.mode = a[1];
+    return 0;
+}
+// (this, factor, apply)
+BUFFER(SetRolloffFactor, 3) {
+    v.rolloff = F32(a[1]);
     return 0;
 }
 BUFFER(SetFilter, 2) { return 0; }

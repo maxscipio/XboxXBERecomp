@@ -632,7 +632,8 @@ KERNEL_EXPORT(207, NtQueryDirectoryFile, 10) {
         LOG_FIRST(8, "NtQueryDirectoryFile: class %u", cls);
         return kInvalidParameter;
     }
-    std::string pat = mask ? ReadAnsiString(mask) : "*";
+    std::string pat = mask ? ReadAnsiString(mask) : "";
+    if (pat.empty()) pat = "*";  // a null or empty FileName lists everything
     if (!f->listed || (restart & 0xFF)) {
         f->entries.clear();
         f->disc_entries.clear();
