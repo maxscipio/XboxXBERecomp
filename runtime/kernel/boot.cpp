@@ -133,8 +133,7 @@ bool Boot(std::vector<uint8_t> xbe, const std::string& xbe_name, const std::stri
     }
     LOGI("boot: kernel imports resolved, %u missing", missing);
 
-    MountDefaults(game_dir, data_dir);
-
+    MountDefaults(game_dir, data_dir, img.title_id);
     // a quick reboot into this title left its launch data page behind
     g_launch_file = data_dir + "/launch.bin";
     std::ifstream lf(g_launch_file, std::ios::binary);

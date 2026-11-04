@@ -104,6 +104,8 @@ struct GameInfo {
     void (*ui)(double fps);        // each frame inside the ImGui frame, UiLock held
     void (*pad)(int port, input::Pad& pad);  // a polled pad before the game gets it
     void (*rumble)(int port, uint16_t& left, uint16_t& right);
+    // the game's first presented frame onward: true keeps the game waiting, the ui still drawn each frame
+    bool (*hold)();
 };
 extern const GameInfo kGame;
 
@@ -111,6 +113,11 @@ extern const GameInfo kGame;
 // blanks of the 60 Hz the console ran at (2 is 30 frames a second); a title's own frame rate, when set, replaces it
 void Pace(uint32_t interval = 1);
 void SetEngineFps(uint32_t fps);
+
+// A title that steps its game once per Swap sets these (any thread): the steps per second Pace holds to instead of
+// the fps cap (0: the cap), and how many steps make one shown frame (1: every step is shown).
+inline std::atomic<uint32_t> g_step_rate{0};
+inline std::atomic<uint32_t> g_show_every{1};
 
 // A title that steps its game once per Swap sets these (any thread): the steps per second Pace holds to instead of
 // the fps cap (0: the cap), and how many steps make one shown frame (1: every step is shown).

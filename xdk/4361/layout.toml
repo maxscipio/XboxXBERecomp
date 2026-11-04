@@ -1,0 +1,45 @@
+# XDK 4361 library data layouts the runtime reads or writes. Only offsets confirmed against the
+# Burnout default.xbe code at the address given are listed. Any key left out traps when first used.
+[layout]
+# D3D8 CDevice, the static device D3D_pDevice points at
+CDevice_Push              = 0x0     # D3DDevice_BeginVisibilityTest 0x12A940 reads [0]
+CDevice_PushThreshold     = 0x4     # D3DDevice_BeginVisibilityTest 0x12A940 reads [4]
+CDevice_Flags             = 0x8     # Direct3D_CreateDevice 0x12D150 ors BehaviorFlags & 0x10 into [8], D3DDevice_SetPixelShader 0x12C4D0 tests it
+CDevice_PixelShader       = 0x370   # D3DDevice_SetPixelShader 0x12C4D0 stores the handle at [0xDC]
+PixelShader_Definition    = 0x8     # D3DDevice_SetPixelShaderProgram 0x12C490 builds {1, 0, def} and 0x12C4D0 reads the definition at [handle + 8]; the definition has the 5849 layout (0x12C4D0 pushes 0x260, 0xA60, 0x17F8, 0x1E20, 0x1E40, 0x1E74)
+CDevice_VertexShader      = 0x380   # D3DDevice_SetVertexShader 0x12C0D0 stores the current shader at [0xE0]
+CDevice_Transforms        = 0x750   # D3DDevice_SetTransform 0x1297D0 copies 16 dwords to +0x750 + type * 64
+CDevice_Viewport          = 0x9D0   # D3DDevice_SetViewport 0x12A2C0 stores X, Y, Width, Height, MinZ, MaxZ
+CDevice_ScreenSpaceOffset = 0x9E8   # D3DDevice_SetScreenSpaceOffset 0x12AC30 stores x and y at +0 and +4
+CDevice_ZScale            = 0x450   # D3DDevice_SetViewport 0x12A2C0 helper 0x127BA0 computes (MaxZ - MinZ) * [0x450]
+CDevice_SuperSampleX      = 0x458   # viewport helper 0x127BA0 scales Width by [0x458]
+CDevice_SuperSampleY      = 0x45C   # viewport helper 0x127BA0 scales Height by [0x45C]
+CDevice_BaseVertex        = 0x1C    # d3d8.lib SetIndices stores BaseVertexIndex at [0x1C]; DrawIndexedVertices 0x12B470 reads it and passes it to 0x12F8C0
+CDevice_Textures          = 0xA78   # D3DDevice_SetTexture 0x12A6F0 stores [stage] at dword 0x29E
+CDevice_Palettes          = 0xA88   # D3DDevice_SetPalette 0x12A870 stores palette at [0xA88 + stage * 4]
+CDevice_RenderTarget      = 0x2070  # D3DDevice_GetRenderTarget 0x12A270 returns it
+CDevice_Depth             = 0x2074  # D3DDevice_GetDepthStencilSurface 0x12A290 returns it
+CDevice_BackBuffer        = 0x207C  # D3DDevice_GetBackBuffer 0x12A230 returns it for index 0
+CDevice_FrontBuffer       = 0x2080  # D3DDevice_GetBackBuffer 0x12A230 returns it for index -1
+CDevice_VBlankEvent       = 0x2434  # D3DDevice_BlockUntilVerticalBlank 0x129A70 waits on it, clears +4
+CDevice_SwapCount         = 0x2AC4  # D3DDevice_Swap 0x129660 increments it
+CDevice_Size              = 0x2AE0  # Direct3D_CreateDevice 0x12D150 clears 0xAB8 dwords of the device on failure
+# D3D8 globals
+DirtyFlags_Texture        = 0x4800  # D3DDevice_SetTexture 0x12A6F0 ors it into D3D_DirtyFlags
+Stream_Size               = 12      # D3DDevice_SetStreamSource 0x12BD10 indexes the stream table by n * 3 dwords
+Stream_Stride             = 0x0     # D3DDevice_SetStreamSource 0x12BD10 stores Stride at D3D_Streams + n * 12
+Stream_Buffer             = 0x8     # D3DDevice_SetStreamSource 0x12BD10 stores the vertex buffer at D3D_Streams + n * 12 + 8
+TextureState_Stage        = 32      # D3DDevice_SetTextureStageStateNotInline 0x128450 indexes D3D_DeferredTextureState by (stage << 5) + type
+# XPP device type record, passed as 0x175534 by the controller code at 0x718BB and 0x7187F
+XPP_Current               = 0x0     # XGetDevices 0x1762D4 reads the connected-ports mask at [0]
+XPP_Changed               = 0x4     # XGetDevices 0x1762D4 clears [4], XGetDeviceChanges 0x1762F6 tests it
+XPP_Previous              = 0x8     # XGetDevices 0x1762D4 copies the mask into [8], XGetDeviceChanges 0x1762F6 reads it
+# render state numbering, read from the library's defaults table at runtime and the Burnout wrapper at 0x23CA3, which calls
+# the by-name setters for 0x75 to 0x91 in the order of the 5849 complex states (PSTextureModes first)
+RenderState_Numbering     = 4361
+# DSOUND
+CDirectSoundStream_Vtable  = 0x0  # CDirectSoundStream constructor 0x15925B stores the first vtable 0x17D554 at [esi]
+CDirectSoundStream_Vtable2 = 0x4  # CDirectSoundStream constructor 0x15925B stores the second vtable 0x17D548 at [esi+4]
+EffectsImage_Skip0         = 0x804  # ParseEffectImageInfo 0x15B058 adds this dword count
+EffectsImage_Skip1         = 0x80C  # ParseEffectImageInfo 0x15B058 loads this dword count
+EffectsImage_Desc          = 0x818  # ParseEffectImageInfo 0x15B058: descriptor at image + 0x818 + (Skip0 + Skip1) * 4

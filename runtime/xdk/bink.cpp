@@ -7,6 +7,7 @@
 
 using namespace kernel;
 
+#if HAS_BinkGetSummary
 X86_EXTERN_FUNC(GUEST_ORIG(BinkGetSummary));
 X86_FUNC(GUEST(BinkGetSummary)) {
     uint32_t bink = R32(ctx.esp + 4);
@@ -18,9 +19,11 @@ X86_FUNC(GUEST(BinkGetSummary)) {
     }
     GUEST_ORIG(BinkGetSummary)(ctx, base);
 }
+#endif
 
 // Movies step one frame per game frame, timed by the console's 30 Hz present. Above 30 fps a frame is decoded
 // and advanced only once BinkWait, which follows the movie's own rate and audio, says it is due.
+#if HAS_BinkWait
 namespace {
 
 constexpr uint32_t kBinkWait = SYM(BinkWait);
@@ -28,7 +31,9 @@ std::mutex g_held_lock;
 std::unordered_set<uint32_t> g_held;  // movies whose frame was not decoded this game frame
 
 }  // namespace
+#endif
 
+#if HAS_BinkWait && HAS_BinkDoFrame
 X86_EXTERN_FUNC(GUEST_ORIG(BinkDoFrame));
 X86_FUNC(GUEST(BinkDoFrame)) {
     uint32_t bink = R32(ctx.esp + 4);
@@ -41,7 +46,9 @@ X86_FUNC(GUEST(BinkDoFrame)) {
     }
     GUEST_ORIG(BinkDoFrame)(ctx, base);
 }
+#endif
 
+#if HAS_BinkWait && HAS_BinkNextFrame
 X86_EXTERN_FUNC(GUEST_ORIG(BinkNextFrame));
 X86_FUNC(GUEST(BinkNextFrame)) {
     uint32_t bink = R32(ctx.esp + 4);
@@ -54,3 +61,4 @@ X86_FUNC(GUEST(BinkNextFrame)) {
     }
     GUEST_ORIG(BinkNextFrame)(ctx, base);
 }
+#endif

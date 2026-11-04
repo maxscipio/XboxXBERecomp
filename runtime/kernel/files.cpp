@@ -258,7 +258,7 @@ std::string ReadCString(uint32_t va, size_t max) {
     return s;
 }
 
-void MountDefaults(const std::string& game_dir, const std::string& data_dir) {
+void MountDefaults(const std::string& game_dir, const std::string& data_dir, uint32_t title_id) {
     std::lock_guard<std::mutex> lock(g_links_lock);
     fs::path d = data_dir;
     g_devices[kCdRom] = game_dir;
@@ -272,6 +272,10 @@ void MountDefaults(const std::string& game_dir, const std::string& data_dir) {
         fs::create_directories(v, ec);
     }
     g_links["\\??\\D:"] = "\\Device\\CdRom0";
+    // saves sit in UDATA\<title id> on the first partition, and the game reaches that folder as U:
+    char udata[80];
+    std::snprintf(udata, sizeof udata, "\\Device\\Harddisk0\\Partition1\\UDATA\\%08X", title_id);
+    g_links["\\??\\U:"] = udata;
     const Disc* disc = MountedDisc();
     LOGI("files: D: is %s, hard disk under %s", disc ? disc->Path().string().c_str() : game_dir.c_str(), data_dir.c_str());
 }
@@ -506,7 +510,7 @@ KERNEL_EXPORT(190, NtCreateFile, 9) {
     FILE* fp = std::fopen(host.c_str(), mode);
     if (!fp && std::string(mode) == "r+b") fp = std::fopen(host.c_str(), "rb");  // read only media
     if (!fp) {
-        LOGW("NtCreateFile: cannot open %s", host.c_str());
+        LOGW("NtCreateFile: cannot open %s mode=%s", host.c_str(), mode);
         IoStatus(iosb, kAccessDenied, 0);
         return kAccessDenied;
     }
