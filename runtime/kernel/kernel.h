@@ -111,6 +111,7 @@ struct Object {
     int32_t signal = 0;
     int32_t limit = 0;
     bool notification = false;  // manual reset event or notification timer
+    bool io_signal = false;     // signalled by a read's late completion that no wait has taken yet
     uint32_t owner = 0;         // mutant owner thread
     uint32_t recursion = 0;
     std::vector<Waiter*> waiters;  // Waits blocked on it
@@ -137,6 +138,9 @@ void SetSignal(Object& o, int32_t v);
 uint32_t Wait(const std::vector<ObjectRef>& objs, bool wait_all, int64_t timeout_100ns, bool alertable);
 int32_t SetEvent(Object& o);
 int32_t ResetEvent(Object& o);
+// a read's completion signal that arrives after the issuing call returned, and the clear a request starts with
+void SetEventIo(Object& o);
+void ClearEventIo(Object& o);
 int32_t PulseEvent(Object& o);
 int32_t ReleaseSemaphore(Object& o, int32_t count, uint32_t& status);
 int32_t ReleaseMutant(Object& o, uint32_t& status);

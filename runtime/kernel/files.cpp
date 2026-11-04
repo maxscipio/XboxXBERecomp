@@ -200,7 +200,7 @@ void Complete(uint32_t event, uint32_t apc, uint32_t apc_ctx, uint32_t iosb, boo
     if (event)
         if (ObjectRef e = FromHandle(event)) {
             // a real overlapped read signals after the call returns; titles clear the event right after issuing the read
-            if (defer) std::thread([e] { std::this_thread::sleep_for(std::chrono::milliseconds(1)); SetEvent(*e); }).detach();
+            if (defer) std::thread([e] { std::this_thread::sleep_for(std::chrono::milliseconds(1)); SetEventIo(*e); }).detach();
             else SetEvent(*e);
         }
     if (apc && Current()) QueueApc(*Current(), apc, apc_ctx, iosb, 0);
@@ -582,6 +582,8 @@ static uint32_t Transfer(const Args& a, bool write, uint32_t pages) {
     }
     if (write && f->entry) return kAccessDenied;
     ResetEvent(*f);
+    if (event)
+        if (ObjectRef e = FromHandle(event)) ClearEventIo(*e);  // a request starts with its event clear
     std::lock_guard<std::mutex> lock(f->io);
     uint64_t pos = Offset(*f, off);
     if (f->fp) Seek(f->fp, pos);

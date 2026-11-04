@@ -102,9 +102,23 @@ void DumpThreads() {
     kernel::DumpFiles();
     for (auto& t : kernel::Threads())
         if (t->ctx) {
-            LOGI("thread %X", t->id);
+            LOGR("thread %X", t->id);
             kernel::LogGuestStack(*t->ctx, 32);
         }
+}
+
+// XBE_AUTODUMP=<seconds>: the F3 report at that time and 20 s later, for a hang nobody was there to press F3 in
+void StartAutoDump() {
+    const char* v = std::getenv("XBE_AUTODUMP");
+    int seconds = v ? std::atoi(v) : 0;
+    if (seconds <= 0) return;
+    std::thread([seconds] {
+        for (int i = 0; i < 2; i++) {
+            std::this_thread::sleep_for(std::chrono::seconds(i ? 20 : seconds));
+            DumpThreads();
+            logx::Flush();
+        }
+    }).detach();
 }
 
 // window thread only
@@ -298,6 +312,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     if (app::Instance() > 1) log += "-" + std::to_string(app::Instance());
     logx::Init((app::ExeDir() / "logs").string(), log, relaunched);
     app::Load();
+    app::StartAutoDump();
     if (app::kGame.init) app::kGame.init();
     if (relaunched && !logx::kVerbose) LOGR("Relaunched: %s", IMAGE_XBE);
     else app::LogSystem();

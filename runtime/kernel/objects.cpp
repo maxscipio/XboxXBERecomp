@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <map>
 #include <queue>
@@ -191,6 +192,7 @@ static void Consume(Object& o, uint32_t me) {
     switch (o.type) {
         case ObjType::Event:
         case ObjType::Timer:
+            o.io_signal = false;
             if (!o.notification) SetSignal(o, 0);
             break;
         case ObjType::Semaphore:
@@ -288,11 +290,37 @@ int32_t SetEvent(Object& o) {
     return old;
 }
 
+// A read completes inside its call here, and its event is signalled 1 ms later (files.cpp). A title that clears the
+// event right after issuing the read, as on the console where the read is still pending, can be preempted past that
+// signal and then wipe it: nothing signals again and its wait never ends. The first clear after such a signal, with no
+// wait in between, is that late clear and leaves the event set.
 int32_t ResetEvent(Object& o) {
-    std::lock_guard<std::mutex> lock(g_dispatch);
-    int32_t old = o.signal;
-    SetSignal(o, 0);
+    int32_t old;
+    {
+        std::lock_guard<std::mutex> lock(g_dispatch);
+        old = o.signal;
+        if (!o.io_signal) {
+            SetSignal(o, 0);
+            return old;
+        }
+        o.io_signal = false;
+    }
+    static std::atomic<int> reported{0};
+    if (reported.fetch_add(1) < 16) LOGR("a clear after a read's late signal on event %08X is ignored", o.guest);
     return old;
+}
+
+void SetEventIo(Object& o) {
+    std::lock_guard<std::mutex> lock(g_dispatch);
+    SetSignal(o, 1);
+    o.io_signal = true;
+    Wake(o);
+}
+
+void ClearEventIo(Object& o) {
+    std::lock_guard<std::mutex> lock(g_dispatch);
+    o.io_signal = false;
+    SetSignal(o, 0);
 }
 
 int32_t PulseEvent(Object& o) {
