@@ -890,6 +890,8 @@ static void AuditExports() {
 // Starts a DSP command: writes the channel's busy byte (2), programs the command registers, then waits for the
 // DSP to clear bit 1. The wait reads the byte once and never again, so nothing can end it from outside. This
 // does the same writes and guest calls with the DSP already done (busy byte cleared).
+// The DSP emulation below needs guest symbols a game's config names (Burnout 3); other games use the host mixer only.
+#ifdef SYM_DSound_GetObject
 X86_FUNC(GUEST(DSound_CmdWrite)) {
     const uint32_t self = ctx.ecx;
     const uint32_t guard = ctx.esp - 8;
@@ -965,12 +967,14 @@ X86_FUNC(GUEST(DSound_Enqueue)) {
     NoteDspBlock(ctx.ecx);
     GUEST_ORIG(DSound_Enqueue)(ctx, base);
 }
+#endif
 
 HLE_STDCALL(DirectSoundCreate, 3) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     Start();
     if (!g_ds) {
         AuditExports();
+#ifdef SYM_DSound_GetObject
         // The guest's audio driver writes the DSP registers at 0xFE800000, which the runtime does not map
         mem::Commit(0xFE800000, 0x100000);
         // Audio command interface registers, read by 0x161676 (bit 0x100 is its ready flag)
@@ -986,9 +990,17 @@ HLE_STDCALL(DirectSoundCreate, 3) {
         if (static_cast<int32_t>(hr) < 0) return hr;
         g_ds = R32(slot);
         std::thread(DspAckLoop).detach();
+#else
+        g_ds = mem::AllocSystem(0x40);
+        std::memset(HostPtr(g_ds), 0, 0x40);
+#endif
     }
+#ifdef SYM_DSound_GetObject
     // The game's handle is the object + 8
     W32(a[1], g_ds + 8);
+#else
+    W32(a[1], g_ds);
+#endif
     return 0;
 }
 HLE_STDCALL(IDirectSound_Release, 1) { return 0; }
@@ -1293,11 +1305,6 @@ BUFFER(SetRolloffFactor, 3) {
     return 0;
 }
 BUFFER(SetFilter, 2) { return 0; }
-// (this, mode, apply)
-BUFFER(SetMode, 3) {
-    v.mode = a[1];
-    return 0;
-}
 BUFFER(SetHeadroom, 2) {
     v.headroom = Db(-int32_t(a[1]));
     return 0;
