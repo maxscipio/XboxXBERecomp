@@ -460,7 +460,7 @@ public:
                uint32_t stencil) override;
     void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) override;
     void Copy(const Surface& src, const Surface& dst, uint32_t count, uint32_t src_rects, uint32_t dst_points) override;
-    void Present(const Surface& front) override;
+    void Present(const Surface& front, bool show) override;
     void WaitGpuFrame(uint64_t n) override;
     void Sync(uint32_t data, uint32_t size) override;
     void SyncLate(uint32_t data) override;
@@ -2525,6 +2525,17 @@ void D3D12Backend::FillDepthConstants(const State& s, const DrawShaders& sh, con
     c.zparams[2] = sh.prog ? units : units * r.far_w / s.zscale;
 }
 
+// the current vertex attributes a title set with SetVertexData*, the hardware's defaults for the rest
+void FillVertexDefaults(const State& s, DrawConstants& c) {
+    for (int r = 0; r < 16; r++) {
+        const float* v = s.vattr[size_t(r)].data();
+        bool set = s.vattr_set >> r & 1;
+        float one = set || r == 3 ? 1.0f : 0.0f;
+        c.vdef[r][0] = set ? v[0] : one, c.vdef[r][1] = set ? v[1] : one, c.vdef[r][2] = set ? v[2] : one;
+        c.vdef[r][3] = set ? v[3] : 1.0f;
+    }
+}
+
 // a fresh copy of the draw's vertex constants, kept as the last upload
 uint8_t* D3D12Backend::UploadVertexConstants(const State& s) {
     Alloc vc = Upload(sizeof(s.vsc), 256);
@@ -2546,6 +2557,7 @@ void D3D12Backend::UploadConstants(const State& s, const DrawShaders& sh, const 
     FillCombinerConstants(s, c);
     if (ext_) ext_->Constants(reinterpret_cast<float(*)[4]>(vsc), c.ext, bound_rt_, k.blend ? k.src : 1);
     FillDepthConstants(s, sh, k, c);
+    FillVertexDefaults(s, c);
     FillTextureConstants(s, sh, stages, c);
     if (sh.fixed_transform) {
         FillTransformConstants(s, size, c);
@@ -3455,7 +3467,7 @@ void LogPerf() {
     }
 }
 
-void D3D12Backend::Present(const Surface& front) {
+void D3D12Backend::Present(const Surface& front, bool show) {
     PerfScope perf_present{g_perf.present};
     if (cap_) {
         FinishCapture(front);
@@ -3469,22 +3481,23 @@ void D3D12Backend::Present(const Surface& front) {
     if (ramp_dirty_) UploadGammaRamp();
     Transition(lut_.Get(), lut_state_, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
-    uint32_t bi = swap_->GetCurrentBackBufferIndex();
-    DrawFrame(t, bi);
+    if (show) DrawFrame(t, swap_->GetCurrentBackBufferIndex());
     Submit(false);
     present_fence_[presents_ % (kFrames + 1)].store(fence_value_);
     DeliverReports();
-    bool vsync = app::Get().vsync;
-    auto perf_swap = PerfClock::now();
-    swap_->Present(vsync ? 1 : 0, !vsync && tearing_ ? DXGI_PRESENT_ALLOW_TEARING : 0);
-    g_perf.swap += PerfMs(perf_swap);
+    if (show) {
+        bool vsync = app::Get().vsync;
+        auto perf_swap = PerfClock::now();
+        swap_->Present(vsync ? 1 : 0, !vsync && tearing_ ? DXGI_PRESENT_ALLOW_TEARING : 0);
+        g_perf.swap += PerfMs(perf_swap);
+    }
 
     presents_++;
     presents_seen_.store(presents_);
     frame_++;
     ReleaseOldTextures();
     ResetFrame();
-    CountFps();
+    if (show) CountFps();
     if (diag::Perf()) LogPerf();
     ApplySettings();
 }

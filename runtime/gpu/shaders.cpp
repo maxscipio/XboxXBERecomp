@@ -57,6 +57,7 @@ const char* kCommonTail = R"(    float4 spread[4];
     float4 rtshift;
     float4 ptsz;
     float4 zparams;
+    float4 vdef[16];
 };
 )";
 
@@ -135,7 +136,7 @@ std::string Src(const Tok& k, int which, uint16_t regs) {
         base = reg == 12 ? "oPos" : F("R%u", reg);
     } else if (mux == 2) {
         uint32_t v = k.f(1, 9, 4);
-        base = (regs >> v) & 1 ? F("i.v%u", v) : (v == 3 ? "float4(1,1,1,1)" : "float4(0,0,0,1)");
+        base = (regs >> v) & 1 ? F("i.v%u", v) : F("vdef[%u]", v);
     } else {
         uint32_t cr = k.f(1, 13, 8);
         base = k.f(3, 1, 1) ? F("c[clamp(a0 + %u, 0, 191)]", cr) : F("c[%u]", cr);

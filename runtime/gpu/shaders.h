@@ -106,6 +106,7 @@ struct DrawConstants {
     float rtshift[4];    // per kTexTarget stage: host pixels its reads move along x and y, negative up and left
     float ptsz[4];       // points: sprite enable, size, min, max
     float zparams[4];    // ReversedDepthHlsl: a w buffer's scale (0 for a z buffer), its far w, the polygon offset
+    float vdef[16][4];   // what a vertex program reads from an input no stream supplies: the current vertex attribute
 };
 
 }  // namespace gpu
