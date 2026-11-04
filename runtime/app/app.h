@@ -29,6 +29,7 @@ struct Settings {
     bool dump_textures = false;      // each texture once into textures\dumps\ beside the exe
     uint32_t texture_dump_format = 0;  // 0 PNG, 1 DDS
     uint32_t aspect = 0;             // 0 from the output's shape, 1 4:3, 2 16:9 (kAspects)
+    bool shader_cache = true;        // compiled shaders and pipelines kept in <exe dir>/shader_cache for the next run
     std::string join_ip;                   // co-op: a host past the LAN the system link search also asks
 };
 
@@ -110,6 +111,11 @@ extern const GameInfo kGame;
 // blanks of the 60 Hz the console ran at (2 is 30 frames a second); a title's own frame rate, when set, replaces it
 void Pace(uint32_t interval = 1);
 void SetEngineFps(uint32_t fps);
+
+// A title that steps its game once per Swap sets these (any thread): the steps per second Pace holds to instead of
+// the fps cap (0: the cap), and how many steps make one shown frame (1: every step is shown).
+inline std::atomic<uint32_t> g_step_rate{0};
+inline std::atomic<uint32_t> g_show_every{1};
 
 // A title that steps its game once per Swap sets these (any thread): the steps per second Pace holds to instead of
 // the fps cap (0: the cap), and how many steps make one shown frame (1: every step is shown).

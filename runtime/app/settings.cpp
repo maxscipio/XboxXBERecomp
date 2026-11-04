@@ -57,6 +57,7 @@ void Load() {
     std::string aspect = t["aspect"].value_or(std::string(kAspects[std::min(s.aspect, 2u)]));
     for (uint32_t i = 0; i < 3; i++)
         if (aspect == kAspects[i]) s.aspect = i;
+    s.shader_cache = t["shader_cache"].value_or(s.shader_cache);
     s.join_ip = t["join_ip"].value_or(s.join_ip);
     for (const Option& o : kGame.options) {
         if (o.flag) *o.flag = t[o.key].value_or(*o.flag);
@@ -81,6 +82,7 @@ toml::table Table() {
                   {"dump_textures", s.dump_textures},
                   {"texture_dump_format", int64_t(s.texture_dump_format)},
                   {"aspect", kAspects[std::min(s.aspect, 2u)]},
+                  {"shader_cache", s.shader_cache},
                   {"join_ip", s.join_ip}};
     for (const Option& o : kGame.options) {
         if (o.flag) t.insert(o.key, *o.flag);

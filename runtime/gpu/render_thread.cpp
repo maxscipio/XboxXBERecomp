@@ -529,6 +529,7 @@ private:
     uint64_t next_id_ = 0, last_present_ = 0;
     bool reports_unflushed_ = false;  // a GetReport that no Flush has followed
     uint64_t presents_ = 0;
+    bool reports_unflushed_ = false;  // a GetReport that no Flush has followed
 
     // the render thread
     State state_;
