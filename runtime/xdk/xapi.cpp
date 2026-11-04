@@ -10,6 +10,10 @@
 #define SYM_XInputGetCapabilities FFFFFC00
 #define HAS_XInputGetCapabilities 0
 #endif
+#ifndef SYM_XInputPoll
+#define SYM_XInputPoll FFFFFC01
+#define HAS_XInputPoll 0
+#endif
 
 using namespace kernel;
 
@@ -91,6 +95,13 @@ HLE_STDCALL(XInputOpen, 4) {
     std::lock_guard<std::mutex> lock(g_ports_lock);
     g_handles[h] = {port, 0, {}};
     return h;
+}
+
+// The guest's own XInputPoll reads the handle as an XPP device object, which an HLE handle is not, and fails with
+// ERROR_DEVICE_NOT_CONNECTED. The state is read fresh in XInputGetState, so there is nothing to poll.
+HLE_STDCALL(XInputPoll, 1) {
+    std::lock_guard<std::mutex> lock(g_ports_lock);
+    return g_handles.count(a[0]) ? 0 : 6;  // ERROR_INVALID_HANDLE
 }
 
 HLE_STDCALL(XInputClose, 1) {

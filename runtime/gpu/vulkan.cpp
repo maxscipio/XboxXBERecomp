@@ -2157,7 +2157,8 @@ Tgt* VulkanBackend::EnsureTarget(const Surface& s, bool depth) {
 bool VulkanBackend::BindTargets(const State& s) {
     Tgt* rt = EnsureTarget(s.rt, false);
     Tgt* ds = s.rs[kRsZEnable] || s.rs[kRsStencilEnable] ? EnsureTarget(s.zs, true) : nullptr;
-    if (rt && ds && (rt->w != ds->w || rt->h != ds->h)) ds = nullptr;
+    // a depth buffer larger than the colour target is fine, it covers the target's top left corner
+    if (rt && ds && (rt->w > ds->w || rt->h > ds->h)) ds = nullptr;
     if (!rt && !ds) return false;
     if (rt) {
         if (LatchCpuWrite(*rt)) UploadTarget(*rt, s.rt);
