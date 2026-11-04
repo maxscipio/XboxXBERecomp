@@ -102,6 +102,10 @@ constexpr bool AllKnown(const LayoutKey (&keys)[N]) {
 #ifndef XDK_CDevice_Viewport
 #define XDK_CDevice_Viewport 0xFFFFFFFFu
 #endif
+// 4361: the build numbers D3DRS differently from the 5849 table gpu/state.h indexes
+#ifndef XDK_RenderState_Numbering
+#define XDK_RenderState_Numbering 0
+#endif
 #ifndef XDK_CDevice_ScreenSpaceOffset
 #define XDK_CDevice_ScreenSpaceOffset 0xFFFFFFFFu
 #endif

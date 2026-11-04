@@ -182,7 +182,7 @@ void QueueApc(Thread& t, uint32_t routine, uint32_t a1, uint32_t a2, uint32_t a3
 std::vector<ThreadRef> Threads();
 
 // files
-void MountDefaults(const std::string& game_dir, const std::string& data_dir);
+void MountDefaults(const std::string& game_dir, const std::string& data_dir, uint32_t title_id);
 bool CreateSymbolicLink(const std::string& link, const std::string& target);
 bool DeleteSymbolicLink(const std::string& link);
 std::string QuerySymbolicLink(const std::string& link);

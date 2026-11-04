@@ -49,6 +49,18 @@ HLE_STDCALL(XMountUtilityDrive, 1) {
     return 1;
 }
 
+// The game polls XGetDevices for the connected ports. The host refreshes the record first, then applies the guest's
+// own updates to it. Only the gamepad record is backed by the host.
+HLE_STDCALL(XGetDevices, 1) {
+    XDK_REQUIRE("xapi", XDK_KEY(XPP_Current), XDK_KEY(XPP_Changed), XDK_KEY(XPP_Previous), XDK_DATA(XPP_GamepadType));
+    if (a[0] != kGamepadType) return 0;
+    UpdatePorts();
+    uint32_t cur = R32(kGamepadType + XDK_XPP_Current);
+    W32(kGamepadType + XDK_XPP_Changed, 0);
+    W32(kGamepadType + XDK_XPP_Previous, cur);
+    return cur;
+}
+
 HLE_STDCALL(XInitDevices, 2) {
     XDK_REQUIRE("xapi", XDK_KEY(XPP_Current), XDK_KEY(XPP_Changed), XDK_KEY(XPP_Previous), XDK_DATA(XPP_GamepadType));
     W32(kGamepadType + XDK_XPP_Current, 0);

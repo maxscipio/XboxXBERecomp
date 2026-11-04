@@ -6,7 +6,9 @@
 #include <condition_variable>
 #include <deque>
 #include <map>
+#include <mutex>
 #include <optional>
+#include <thread>
 #include <vector>
 
 #include "audio/audio.h"
@@ -84,6 +86,10 @@ X86Func* Find(uint32_t guest);
 #ifndef SYM_IDirectSoundBuffer_SetEG
 #define SYM_IDirectSoundBuffer_SetEG FFFFFF0E
 #define HAS_IDirectSoundBuffer_SetEG 0
+#endif
+#ifndef SYM_IDirectSoundBuffer_SetMode
+#define SYM_IDirectSoundBuffer_SetMode FFFFFF0F
+#define HAS_IDirectSoundBuffer_SetMode 0
 #endif
 
 namespace {
@@ -739,7 +745,7 @@ static void AuditExports() {
         SYM(IDirectSound_DownloadEffectsImage), SYM(IDirectSound_GetEffectData), SYM(IDirectSound_CommitEffectData),
         SYM(IDirectSound_GetOutputLevels), SYM(IDirectSoundBuffer_SetPlayRegion), SYM(IDirectSoundBuffer_SetAllParameters),
         SYM(IDirectSoundBuffer_SetFormat), SYM(IDirectSoundBuffer_SetOutputBuffer), SYM(IDirectSoundBuffer_SetRolloffCurve),
-        SYM(IDirectSoundBuffer_StopEx), SYM(IDirectSoundBuffer_Pause), SYM(IDirectSoundBuffer_SetEG),
+        SYM(IDirectSoundBuffer_StopEx), SYM(IDirectSoundBuffer_Pause), SYM(IDirectSoundBuffer_SetEG), SYM(IDirectSoundBuffer_SetMode),
         SYM(XAudioDownloadEffectsImage), SYM(DirectSoundCreateBuffer), SYM(IDirectSound_CreateSoundBuffer),
         SYM(IDirectSoundBuffer_Release), SYM(IDirectSoundBuffer_Unlock), SYM(IDirectSoundBuffer_SetBufferData),
         SYM(IDirectSoundBuffer_Play), SYM(IDirectSoundBuffer_Stop), SYM(IDirectSoundBuffer_SetLoopRegion),
@@ -776,15 +782,108 @@ static void AuditExports() {
     if (!left.empty()) LOGW("dsound: exports running their original code:%s", left.c_str());
 }
 
+// Starts a DSP command: writes the channel's busy byte (2), programs the command registers, then waits for the
+// DSP to clear bit 1. The wait reads the byte once and never again, so nothing can end it from outside. This
+// does the same writes and guest calls with the DSP already done (busy byte cleared).
+X86_FUNC(GUEST(DSound_CmdWrite)) {
+    const uint32_t self = ctx.ecx;
+    const uint32_t guard = ctx.esp - 8;
+    ctx.esp -= 8;
+    W32(guard, 0);
+    W32(guard + 4, 0);
+    auto byteAt = [](uint32_t va) { return uint32_t(*static_cast<uint8_t*>(HostPtr(va))); };
+
+    ctx.ecx = guard;
+    CallGuest(ctx, SYM(DSound_Guard_Enter), {});
+
+    // channel offset within the audio command window, 0xFEC00000 + offset is the register block
+    const uint32_t off = R32(SYM(DSound_CmdTable) + R32(self) * 4);
+    *static_cast<uint8_t*>(HostPtr(0xFEC0010Bu + off)) = 0;
+    W32(0xFEC00100u + off, R32(self + 0x1C));
+    if (R32(self) == 1) W32(0xFEC0017C, R32(self + 0x28));
+
+    ctx.ecx = self;
+    CallGuest(ctx, SYM(DSound_CmdConfig), {byteAt(self + 0x25), byteAt(self + 0x24), 1, 1});
+
+    ctx.ecx = guard;
+    CallGuest(ctx, SYM(DSound_Guard_Leave), {});
+    ctx.esp += 8;
+    ctx.esp += 4;  // return
+}
+
+// The guest's submit routines wait for the DSP to clear a status word at [block+0x810] (block = the DSP control
+// block). Nothing emulates that completion, so a host thread clears the word for every block the guest has used.
+namespace {
+std::mutex g_dspLock;
+std::vector<uint32_t> g_dspBlocks;
+
+void NoteDspBlock(uint32_t self) {
+    // these hooks run before the original, so each guest address is checked before it is read
+    if (!mem::IsCommitted(self + 8)) return;
+    const uint32_t a = R32(self + 8);
+    if (!mem::IsCommitted(a + 0x10)) return;
+    const uint32_t b = R32(a + 0x10);
+    if (!mem::IsCommitted(b)) return;
+    const uint32_t block = R32(b);
+    if (!mem::IsCommitted(block + 0x810)) return;
+    std::lock_guard<std::mutex> lock(g_dspLock);
+    if (std::find(g_dspBlocks.begin(), g_dspBlocks.end(), block) == g_dspBlocks.end()) {
+        g_dspBlocks.push_back(block);
+        LOGE("DSP block %08X registered", block);
+    }
+}
+
+void DspAckLoop() {
+    uint32_t acks = 0;
+    for (;;) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        std::lock_guard<std::mutex> lock(g_dspLock);
+        for (uint32_t block : g_dspBlocks) {
+            volatile uint32_t* status = static_cast<volatile uint32_t*>(HostPtr(block + 0x810));
+            if (*status) {
+                *status = 0;
+                if (++acks % 1000 == 1) LOGE("DSP acked %u commands", acks);
+            }
+        }
+    }
+}
+}  // namespace
+
+X86_EXTERN_FUNC(GUEST_ORIG(DSound_Submit));
+X86_FUNC(GUEST(DSound_Submit)) {
+    NoteDspBlock(ctx.ecx);
+    GUEST_ORIG(DSound_Submit)(ctx, base);
+}
+
+X86_EXTERN_FUNC(GUEST_ORIG(DSound_Enqueue));
+X86_FUNC(GUEST(DSound_Enqueue)) {
+    NoteDspBlock(ctx.ecx);
+    GUEST_ORIG(DSound_Enqueue)(ctx, base);
+}
+
 HLE_STDCALL(DirectSoundCreate, 3) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     Start();
     if (!g_ds) {
         AuditExports();
-        g_ds = mem::AllocSystem(0x40);
-        std::memset(HostPtr(g_ds), 0, 0x40);
+        // The guest's audio driver writes the DSP registers at 0xFE800000, which the runtime does not map
+        mem::Commit(0xFE800000, 0x100000);
+        // Audio command interface registers, read by 0x161676 (bit 0x100 is its ready flag)
+        mem::Commit(0xFEC00000, 0x10000);
+        W32(0xFEC00130, 0x100);
+        // The guest polls this DSP counter with ">= N" tests (N from 4 up to 0x80, and some against
+        // guest ring pointers). Report the DSP as having consumed everything so no poll waits forever.
+        W32(0xFE820010, 0xFFFFFFFC);
+        // The guest factory builds the device object (vtable and sub-objects) and writes it to the out slot
+        const uint32_t slot = mem::AllocSystem(4);
+        W32(slot, 0);
+        const uint32_t hr = GUEST_CALL(DSound_GetObject, ctx, {slot});
+        if (static_cast<int32_t>(hr) < 0) return hr;
+        g_ds = R32(slot);
+        std::thread(DspAckLoop).detach();
     }
-    W32(a[1], g_ds);
+    // The game's handle is the object + 8
+    W32(a[1], g_ds + 8);
     return 0;
 }
 HLE_STDCALL(IDirectSound_Release, 1) { return 0; }
@@ -936,13 +1035,22 @@ HLE_STDCALL(IDirectSound_GetOutputLevels, 3) {
 HLE_STDCALL(DirectSoundCreateBuffer, 2) { return NewBuffer(a[0], a[1]); }
 HLE_STDCALL(IDirectSound_CreateSoundBuffer, 4) { return NewBuffer(a[1], a[2]); }
 
-#define BUFFER(name, nargs)                                 \
-    static uint32_t buf_##name(Voice& v, const Args& a);    \
-    HLE_STDCALL(IDirectSoundBuffer_##name, nargs) {         \
-        std::lock_guard<std::recursive_mutex> lock(g_lock); \
-        Voice* v = Find(a[0]);                              \
-        return v ? buf_##name(*v, a) : 0x80004005u;         \
-    }                                                       \
+// A buffer the host made is mixed here; one the library made for its own use runs its original code
+#define BUFFER(name, nargs)                                                                              \
+    HLE_ABI_(hle_abi_buf_##name, hle_args_buf_##name, "IDirectSoundBuffer_" #name, ::hle::Map{},         \
+             !hle_abi_buf_##name::map.mapped || hle_abi_buf_##name::map.n == (nargs))                    \
+    X86_EXTERN_FUNC(GUEST_ORIG(IDirectSoundBuffer_##name));                                              \
+    static uint32_t buf_##name(Voice& v, const Args& a);                                                 \
+    X86_FUNC(GUEST(IDirectSoundBuffer_##name)) {                                                         \
+        hle_args_buf_##name args{ctx};                                                                   \
+        const uint32_t pops = hle_abi_buf_##name::map.mapped ? hle_abi_buf_##name::map.pops : (nargs);   \
+        {                                                                                                \
+            std::lock_guard<std::recursive_mutex> lock(g_lock);                                          \
+            if (Voice* v = Find(args[0])) return ::kernel::Return(ctx, buf_##name(*v, args), pops);      \
+        }                                                                                                \
+        if constexpr (HAS_IDirectSoundBuffer_##name) GUEST_ORIG(IDirectSoundBuffer_##name)(ctx, base);   \
+        else ::kernel::Return(ctx, 0x80004005u, pops);                                                   \
+    }                                                                                                    \
     static uint32_t buf_##name([[maybe_unused]] Voice& v, [[maybe_unused]] const Args& a)
 
 BUFFER(Release, 1) {
@@ -1045,6 +1153,11 @@ BUFFER(SetFrequency, 2) {
     return 0;
 }
 BUFFER(SetFilter, 2) { return 0; }
+// (this, mode, apply)
+BUFFER(SetMode, 3) {
+    v.mode = a[1];
+    return 0;
+}
 BUFFER(SetHeadroom, 2) {
     v.headroom = Db(-int32_t(a[1]));
     return 0;

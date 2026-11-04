@@ -365,6 +365,7 @@ KERNEL_EXPORT(217, NtQueryVirtualMemory, 2) {
 
 KERNEL_EXPORT(165, MmAllocateContiguousMemory, 1) { return mem::AllocContiguous(a[0], 0, 0xFFFFFFFF, 0); }
 KERNEL_EXPORT(166, MmAllocateContiguousMemoryEx, 5) { return mem::AllocContiguous(a[0], a[1], a[2], a[3]); }
+
 KERNEL_EXPORT(171, MmFreeContiguousMemory, 1) {
     mem::FreeContiguous(a[0]);
     return 0;
