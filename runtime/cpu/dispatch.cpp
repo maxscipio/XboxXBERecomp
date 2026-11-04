@@ -251,6 +251,17 @@ namespace kernel {
 void LogGuestStack(X86Context& ctx, int words) {
     LOGE("  eax %08X ecx %08X edx %08X ebx %08X esp %08X ebp %08X esi %08X edi %08X", ctx.eax, ctx.ecx, ctx.edx, ctx.ebx,
          ctx.esp, ctx.ebp, ctx.esi, ctx.edi);
+    for (uint32_t reg : {ctx.esi, ctx.edi, ctx.ebx, ctx.ebp}) {
+        if (!mem::IsCommitted(reg) || !mem::IsCommitted(reg + 0x3C)) continue;
+        LOGE("  [%08X] %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X", reg, R32(reg), R32(reg + 4),
+             R32(reg + 8), R32(reg + 12), R32(reg + 16), R32(reg + 20), R32(reg + 24), R32(reg + 28), R32(reg + 32), R32(reg + 36),
+             R32(reg + 40), R32(reg + 44), R32(reg + 48), R32(reg + 52), R32(reg + 56), R32(reg + 60));
+        uint32_t vt = R32(reg);
+        if (mem::IsCommitted(vt) && mem::IsCommitted(vt + 0x40))
+            LOGE("   vtbl %08X: %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X", vt, R32(vt), R32(vt + 4),
+                 R32(vt + 8), R32(vt + 12), R32(vt + 16), R32(vt + 20), R32(vt + 24), R32(vt + 28), R32(vt + 32), R32(vt + 36),
+                 R32(vt + 40), R32(vt + 44), R32(vt + 48), R32(vt + 52), R32(vt + 56), R32(vt + 60));
+    }
     for (int i = 0; i < words; i++) {
         uint32_t a = ctx.esp + uint32_t(i) * 4;
         if (!mem::IsCommitted(a)) break;

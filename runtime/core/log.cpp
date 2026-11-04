@@ -52,7 +52,8 @@ void Init(const std::string& dir, const std::string& prefix, bool append) {
 const std::string& Path() { return g_path; }
 
 void Write(Level lv, const char* fmt, ...) {
-    if (!kVerbose && lv < Level::Error) return;
+    static const bool all = std::getenv("XBE_LOG") != nullptr;  // release build: every level, flushed per line
+    if (!kVerbose && !all && lv < Level::Error) return;
     char msg[4096];
     va_list ap;
     va_start(ap, fmt);
@@ -68,7 +69,7 @@ void Write(Level lv, const char* fmt, ...) {
     n = std::min(n, int(sizeof(line)) - 1);
     if (g_file) {
         std::fwrite(line, 1, size_t(n), g_file);
-        if (kVerbose || lv >= Level::Warn) std::fflush(g_file);  // a debug log must survive a killed or hung process
+        if (kVerbose || all || lv >= Level::Warn) std::fflush(g_file);  // a debug log must survive a killed or hung process
     }
     std::fwrite(line, 1, size_t(n), stderr);
 }
