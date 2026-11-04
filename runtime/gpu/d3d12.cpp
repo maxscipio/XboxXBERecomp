@@ -199,8 +199,11 @@ D3D12_BLEND Blend(uint32_t v, bool alpha) {
         case kBlendDestColor: return alpha ? D3D12_BLEND_DEST_ALPHA : D3D12_BLEND_DEST_COLOR;
         case 0x307: return alpha ? D3D12_BLEND_INV_DEST_ALPHA : D3D12_BLEND_INV_DEST_COLOR;
         case 0x308: return D3D12_BLEND_SRC_ALPHA_SAT;
-        case 0x8001: case 0x8003: return D3D12_BLEND_BLEND_FACTOR;
-        case 0x8002: case 0x8004: return D3D12_BLEND_INV_BLEND_FACTOR;
+        case 0x8001: return D3D12_BLEND_BLEND_FACTOR;
+        case 0x8002: return D3D12_BLEND_INV_BLEND_FACTOR;
+        // the constant's alpha for every channel; the alpha channel's own factor is the constant's alpha already
+        case 0x8003: return alpha ? D3D12_BLEND_BLEND_FACTOR : D3D12_BLEND_ALPHA_FACTOR;
+        case 0x8004: return alpha ? D3D12_BLEND_INV_BLEND_FACTOR : D3D12_BLEND_INV_ALPHA_FACTOR;
         default: return D3D12_BLEND_ONE;
     }
 }
@@ -379,6 +382,7 @@ struct PsoKey {
     float zslope;
     uint32_t rtfmt;
     uint32_t sprite;  // DrawShaders::sprite
+    uint32_t zclamp;  // NV097_SET_ZMIN_MAX_CONTROL's ZCLAMP_EN: depth is clamped instead of clipped
 };
 
 // Blit's settings past the source and its rectangle
@@ -1694,7 +1698,7 @@ void D3D12Backend::FillPipelineDesc(const PsoKey& k, ID3DBlob* vs, ID3DBlob* ps,
     d.RasterizerState.FrontCounterClockwise = k.ccw;
     d.RasterizerState.DepthBias = k.zbias;
     d.RasterizerState.SlopeScaledDepthBias = k.zslope;
-    d.RasterizerState.DepthClipEnable = TRUE;
+    d.RasterizerState.DepthClipEnable = !k.zclamp;
     FillDepthStencilDesc(k, d.DepthStencilState);
     d.PrimitiveTopologyType = TopologyType(k.topo);
     d.NumRenderTargets = k.has_rt ? 1 : 0;
@@ -2262,6 +2266,7 @@ void KeyRasterizer(const State& s, const Assembled& a, PsoKey& k) {
     k.cull = cull != 0 && a.topology == Topology::Triangles;
     k.ccw = cull == kCullCw;  // culling clockwise leaves counter clockwise as the front
     k.fill = s.rs[kRsFillMode];
+    k.zclamp = (SimpleState(s, kMDepthClipControl) & 0x10) != 0;
 }
 
 void D3D12Backend::BuildPipelineKey(const State& s, const Assembled& a, uint64_t vh, uint64_t ph, PsoKey& k) {
@@ -2580,10 +2585,20 @@ void D3D12Backend::CaptureTextures(const State& s, const DrawTextures& stages) {
     for (int i = 0; i < 4; i++) {
         ID3D12Resource* res = stages.res[i];
         TextureDesc d;
-        if (!s.textures[size_t(i)] || !Describe(s.textures[size_t(i)], d)) continue;
+        if (!s.textures[size_t(i)]) continue;
+        if (!Describe(s.textures[size_t(i)], d)) {
+            fprintf(cap_, " | t%d %08X not a texture (common %08X)", i, s.textures[size_t(i)], kernel::R32(s.textures[size_t(i)]));
+            continue;
+        }
         bool tg = targets_.count(SizedTargetKey(d.data, Format(d.format).depth, d.width, d.height));
         fprintf(cap_, " | t%d %08X fmt %X %ux%u%s%s", i, d.data, d.format, d.width, d.height, tg ? " target" : "",
                 res ? "" : " unbound");
+        if (d.format == 0x0B) {
+            StagePalette pal;
+            ReadStagePalette(s, i, d, pal);
+            fprintf(cap_, " pal %08X va %08X [0] %08X [1] %08X [254] %08X [255] %08X", s.palettes[size_t(i)], pal.va,
+                    pal.colours[0], pal.colours[1], pal.colours[254], pal.colours[255]);
+        }
         if (res && !tg && stages.info[i].kind == kTex2D && cap_seen_.insert(d.data).second) {
             cap_tex_.push_back({res, stages.sv[i].Format, d.data, d.width, d.height});
         }
@@ -2595,6 +2610,21 @@ constexpr int kVsConstants = 192;
 constexpr int kVsConstantBias = 96;
 
 void D3D12Backend::CaptureInputs(const State& s, const Assembled& a, const DrawConstants& c) {
+    fprintf(cap_, "\n     inputs vc %u indexed %u strip %d", a.vertex_count, a.index_count, a.strip);
+    for (int r = 0; r < 16; r++) {
+        if (!((a.regs >> r) & 1)) continue;
+        const VertexElement& e = a.elements[size_t(r)];
+        const VertexBuffer& vb = a.buffers[e.buffer];
+        fprintf(cap_, "\n     v%d dxgi %u dec %llu buf %u off %u stride %u:", r, e.format,
+                (unsigned long long)((a.decode >> (4 * r)) & 15), e.buffer, e.offset, vb.stride);
+        if (vb.src && vb.bytes >= e.offset + 16u) {
+            for (int v = 0; v < 3; v++) {
+                fprintf(cap_, " [");
+                for (int k = 0; k < 16; k++) fprintf(cap_, "%02X", vb.src[size_t(v) * vb.stride + e.offset + k]);
+                fprintf(cap_, "]");
+            }
+        }
+    }
     fprintf(cap_, "\n     verts");
     uint32_t n = 0;
     for (int r = 0; r < 16; r++) n += (a.regs >> r) & 1;
@@ -2606,9 +2636,11 @@ void D3D12Backend::CaptureInputs(const State& s, const Assembled& a, const DrawC
     for (int r = 0; r < kVsConstants; r++) {
         const auto& v = s.vsc[r];
         if (v[0] || v[1] || v[2] || v[3]) {
-            fprintf(cap_, "\n     c%d %g %g %g %g", r - kVsConstantBias, v[0], v[1], v[2], v[3]);
+            fprintf(cap_, "\n     c%d %.9g %.9g %.9g %.9g", r - kVsConstantBias, v[0], v[1], v[2], v[3]);
         }
     }
+    fprintf(cap_, "\n     zp %.9g %.9g %.9g %.9g surf %g %g %g %g", c.zparams[0], c.zparams[1], c.zparams[2], c.zparams[3], c.surf[0],
+            c.surf[1], c.surf[2], c.surf[3]);
     fprintf(cap_, "\n     pc");
     for (size_t r = 0; r < std::size(c.pc); r++) {
         fprintf(cap_, " (%.3f %.3f %.3f %.3f)", c.pc[r][0], c.pc[r][1], c.pc[r][2], c.pc[r][3]);
@@ -2624,16 +2656,23 @@ void D3D12Backend::CaptureDraw(const State& s, uint32_t prim, uint32_t count, co
             cap_i_++, s.rt.data, bound_ds_ ? s.zs.data : 0, prim, count, s.vs_handle, s.ps ? s.ps->handle : 0, k.blend,
             k.src, k.dst, k.zen, k.zfunc, k.zwrite, k.zbias, k.zslope, k.cull, k.wmask, c.pc[0][0], c.pc[0][1],
             c.pc[0][2], c.pc[0][3]);
+    if (k.sten) {
+        fprintf(cap_, " zmm %X cullmode %X ccw %u stencil %X ref %X mask %X wmask %X ops %X %X %X", SimpleState(s, kMDepthClipControl),
+                s.rs[kRsCullMode], k.ccw, k.sfunc,
+                SimpleState(s, kMStencilRef) & 0xFF,
+                k.smask, k.swmask, k.sfail, k.szfail, k.spass);
+    }
     CaptureTextures(s, stages);
 }
 
 // small draws: their inputs and constants; then ends the draw's line
 void D3D12Backend::EndDrawCapture(const State& s, const Assembled& a, uint32_t count, const DrawConstants& c) {
-    if (count <= kQuadVertices) CaptureInputs(s, a, c);
+    if (count <= kQuadVertices || (SimpleState(s, kMDepthClipControl) & 0x10)) CaptureInputs(s, a, c);
     // the first big draw of each vertex shader: its transform rows at full precision
     else if (cap_sh_.insert((1ull << 40) | s.vs_handle).second) {
+        CaptureInputs(s, a, c);
         fprintf(cap_, "\n     transform");
-        for (int r : {0, 1, 2, 3, 4, 5, 6, 7, 58, 59, 90, 94, 95, 96, 97, 98, 99, 100, 112, 113, 114, 115, 118, 120, 121, 122, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 154, 155, 158, 159}) {
+        for (int r : {0, 1, 2, 3, 4, 5, 6, 7, 58, 59, 90, 94, 95, 96, 97, 98, 99, 100, 112, 113, 114, 115, 118, 120, 121, 122, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 154, 155, 158, 159, 176, 177}) {
             const auto& v = s.vsc[size_t(r)];
             fprintf(cap_, "\n     hw%d %.9g %.9g %.9g %.9g", r, v[0], v[1], v[2], v[3]);
         }

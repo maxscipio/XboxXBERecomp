@@ -1012,6 +1012,7 @@ bool RecordConstants(uint32_t reg, uint32_t src, uint32_t dwords) {
 void SetConstants(uint32_t reg, uint32_t src, uint32_t count) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     if (RecordConstants(reg, src, count * 4)) return;
+    Walk(Dev(kDevPush));  // constants the title pushed itself come first
     for (uint32_t i = 0; i < count && reg + i < 192; i++) std::memcpy(g_state.vsc[reg + i].data(), HostPtr(src + i * 16), 16);
 }
 

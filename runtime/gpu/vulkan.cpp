@@ -146,8 +146,10 @@ VkBlendFactor Blend(uint32_t v, bool alpha) {
         case kBlendDestColor: return alpha ? VK_BLEND_FACTOR_DST_ALPHA : VK_BLEND_FACTOR_DST_COLOR;
         case 0x307: return alpha ? VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA : VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR;
         case 0x308: return VK_BLEND_FACTOR_SRC_ALPHA_SATURATE;
-        case 0x8001: case 0x8003: return VK_BLEND_FACTOR_CONSTANT_COLOR;
-        case 0x8002: case 0x8004: return VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR;
+        case 0x8001: return VK_BLEND_FACTOR_CONSTANT_COLOR;
+        case 0x8002: return VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR;
+        case 0x8003: return VK_BLEND_FACTOR_CONSTANT_ALPHA;
+        case 0x8004: return VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA;
         default: return VK_BLEND_FACTOR_ONE;
     }
 }
