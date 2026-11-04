@@ -57,6 +57,7 @@ const char* kCommonTail = R"(    float4 spread[4];
     float4 rtshift;
     float4 ptsz;
     float4 zparams;
+    float4 vdef[16];
 };
 )";
 
@@ -94,7 +95,15 @@ float4 ilu_lit(float4 s) {
     float spec = exp2(clamp(s.w, -cap, cap) * log2(max(s.y, 0)));
     return float4(1, diffuse, diffuse > 0 ? spec : 0, 1);
 }
+// bit tests: the compiler may fold isnan and isinf away
+bool4 is_nan(float4 v) { return (asuint(v) & 0x7FFFFFFF) > 0x7F800000; }
+bool is_inf(float v) { return (asuint(v) & 0x7FFFFFFF) == 0x7F800000; }
+// the console's rasterizer takes a NaN color component as 1 where saturate would give 0 (Otogi's lighting)
+float4 color_out(float4 v) { return saturate(is_nan(v) ? 1 : v); }
+// a NaN or infinite fog coordinate, as an unset game table entry gives, is no fog in the linear and exp modes, all
+// fog in exp2
 float fogfactor(float d) {
+    if (is_nan(d.xxxx).x || is_inf(d)) return fogp.w == 2 ? 0 : 1;
     if (fogp.w == 3) return (fogp.y - d) / (fogp.y - fogp.x);
     if (fogp.w == 1) return exp(-d * fogp.z);
     if (fogp.w == 2) return exp(-(d * fogp.z) * (d * fogp.z));
@@ -135,7 +144,7 @@ std::string Src(const Tok& k, int which, uint16_t regs) {
         base = reg == 12 ? "oPos" : F("R%u", reg);
     } else if (mux == 2) {
         uint32_t v = k.f(1, 9, 4);
-        base = (regs >> v) & 1 ? F("i.v%u", v) : (v == 3 ? "float4(1,1,1,1)" : "float4(0,0,0,1)");
+        base = (regs >> v) & 1 ? F("i.v%u", v) : F("vdef[%u]", v);
     } else {
         uint32_t cr = k.f(1, 13, 8);
         base = k.f(3, 1, 1) ? F("c[clamp(a0 + %u, 0, 191)]", cr) : F("c[%u]", cr);
@@ -235,10 +244,10 @@ const char* kVsEpilogue = R"(
     q.xyz *= p.w;
     q.w = p.w;
     o.pos = q;
-    o.d0 = saturate(oD0);
-    o.d1 = saturate(oD1);
-    o.b0 = saturate(oB0);
-    o.b1 = saturate(oB1);
+    o.d0 = color_out(oD0);
+    o.d1 = color_out(oD1);
+    o.b0 = color_out(oB0);
+    o.b1 = color_out(oB1);
     o.tc0 = oT0;
     o.tc1 = oT1;
     o.tc2 = oT2;
@@ -851,8 +860,8 @@ std::string FixedVertexHlsl(uint16_t regs, bool pretransformed, uint64_t decode,
     if (surf.w == 0 && abs(sp.x - (surf.x - 0.5)) < 1e-3) cp.x = cp.w;
     if (surf.w == 0 && abs(sp.y - (surf.y - 0.5)) < 1e-3) cp.y = -cp.w;
     o.pos = cp;
-    o.d0 = saturate(oD0);
-    o.d1 = saturate(oD1);
+    o.d0 = color_out(oD0);
+    o.d1 = color_out(oD1);
     o.b0 = o.d0;
     o.b1 = o.d1;
     o.tc0 = oT0;

@@ -174,6 +174,9 @@ struct State {
     std::shared_ptr<PixelShader> ps;
     std::array<std::array<float, 4>, 192> vsc{};  // hardware order: D3D register + 96
     std::array<std::array<float, 4>, 16> psc{};
+    // the hardware's current vertex attributes: what a program reads from an input no stream supplies
+    std::array<std::array<float, 4>, 16> vattr{};
+    uint16_t vattr_set = 0;  // bit per register the title has written
     Viewport viewport;
     Surface rt, zs;
     uint32_t scissor_count = 0;

@@ -2525,6 +2525,17 @@ void D3D12Backend::FillDepthConstants(const State& s, const DrawShaders& sh, con
     c.zparams[2] = sh.prog ? units : units * r.far_w / s.zscale;
 }
 
+// the current vertex attributes a title set with SetVertexData*, the hardware's defaults for the rest
+void FillVertexDefaults(const State& s, DrawConstants& c) {
+    for (int r = 0; r < 16; r++) {
+        const float* v = s.vattr[size_t(r)].data();
+        bool set = s.vattr_set >> r & 1;
+        float one = set || r == 3 ? 1.0f : 0.0f;
+        c.vdef[r][0] = set ? v[0] : one, c.vdef[r][1] = set ? v[1] : one, c.vdef[r][2] = set ? v[2] : one;
+        c.vdef[r][3] = set ? v[3] : 1.0f;
+    }
+}
+
 // a fresh copy of the draw's vertex constants, kept as the last upload
 uint8_t* D3D12Backend::UploadVertexConstants(const State& s) {
     Alloc vc = Upload(sizeof(s.vsc), 256);
@@ -2546,6 +2557,7 @@ void D3D12Backend::UploadConstants(const State& s, const DrawShaders& sh, const 
     FillCombinerConstants(s, c);
     if (ext_) ext_->Constants(reinterpret_cast<float(*)[4]>(vsc), c.ext, bound_rt_, k.blend ? k.src : 1);
     FillDepthConstants(s, sh, k, c);
+    FillVertexDefaults(s, c);
     FillTextureConstants(s, sh, stages, c);
     if (sh.fixed_transform) {
         FillTransformConstants(s, size, c);
@@ -2616,13 +2628,60 @@ void D3D12Backend::CaptureDraw(const State& s, uint32_t prim, uint32_t count, co
 
 // small draws: their inputs and constants; then ends the draw's line
 void D3D12Backend::EndDrawCapture(const State& s, const Assembled& a, uint32_t count, const DrawConstants& c) {
+    { // TMP: clip-space bounds of the draw's positions under c112..c115, to see where world geometry lands
+        uint32_t n = 0;
+        for (int r = 0; r < 16; r++) n += (a.regs >> r) & 1;
+        const auto& e0 = a.elements[0];
+        const auto& b0 = a.buffers[e0.buffer];
+        bool raw = a.vertices.empty();
+        if ((a.regs & 1) && n && (!raw || (b0.src && b0.stride && e0.format == 6))) {
+            size_t vn = raw ? std::min<size_t>(a.vertex_count, (b0.bytes - e0.offset) / b0.stride) : a.vertices.size() / (n * 4);
+            float lo[4] = {1e30f, 1e30f, 1e30f, 1e30f}, hi[4] = {-1e30f, -1e30f, -1e30f, -1e30f};
+            for (size_t v = 0; v < vn; v++) {
+                float pr[4] = {0, 0, 0, 1};
+                if (raw) std::memcpy(pr, b0.src + e0.offset + v * b0.stride, 12);
+                const float* p = raw ? pr : &a.vertices[v * n * 4];
+                float o[4];
+                for (int k = 0; k < 4; k++) {
+                    const auto& m = s.vsc[size_t(112 + k)];
+                    o[k] = p[0] * m[0] + p[1] * m[1] + p[2] * m[2] + p[3] * m[3];
+                }
+                float w = o[3] != 0 ? o[3] : 1e-9f;
+                float t[4] = {o[0] / w, o[1] / w, o[2] / w, w};
+                for (int k = 0; k < 4; k++) { lo[k] = std::min(lo[k], t[k]); hi[k] = std::max(hi[k], t[k]); }
+            }
+            fprintf(cap_, "\n     TMPclip vn %zu x %g..%g y %g..%g z %g..%g w %g..%g | c112 %g %g %g %g c115 %g %g %g %g | c158 %g %g",
+                    vn, lo[0], hi[0], lo[1], hi[1], lo[2], hi[2], lo[3], hi[3],
+                    s.vsc[112][0], s.vsc[112][1], s.vsc[112][2], s.vsc[112][3], s.vsc[115][0], s.vsc[115][1], s.vsc[115][2], s.vsc[115][3],
+                    s.vsc[158][0], s.vsc[158][1]);
+        }
+    }
     if (count <= kQuadVertices) CaptureInputs(s, a, c);
     // the first big draw of each vertex shader: its transform rows at full precision
     else if (cap_sh_.insert((1ull << 40) | s.vs_handle).second) {
         fprintf(cap_, "\n     transform");
-        for (int r : {0, 1, 2, 3, 96, 97, 98, 99, 100}) {
+        for (int r : {0, 1, 2, 3, 4, 5, 6, 7, 58, 59, 90, 94, 95, 96, 97, 98, 99, 100, 112, 113, 114, 115, 118, 120, 121, 122, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 154, 155, 158, 159}) {
             const auto& v = s.vsc[size_t(r)];
             fprintf(cap_, "\n     hw%d %.9g %.9g %.9g %.9g", r, v[0], v[1], v[2], v[3]);
+        }
+        { // TMP
+            uint32_t n = 0;
+            for (int r = 0; r < 16; r++) n += (a.regs >> r) & 1;
+            fprintf(cap_, "\n     TMPregs %04X n %u vc %u", a.regs, n, a.vertex_count);
+            for (int r = 0; r < 16; r++) {
+                if (!((a.regs >> r) & 1)) continue;
+                const auto& e = a.elements[size_t(r)];
+                const auto& b = a.buffers[e.buffer];
+                fprintf(cap_, "\n     TMPe v%d fmt %u buf %u off %u stride %u dec %llX raw:", r, e.format, e.buffer, e.offset, b.stride,
+                        (unsigned long long)(a.decode >> (4 * r) & 15));
+                if (b.src && b.bytes >= e.offset + 16)
+                    for (int q = 0; q < 16; q++) fprintf(cap_, " %02X", b.src[e.offset + q]);
+            }
+            for (size_t v = 0; v < std::min<size_t>(3, n ? a.vertices.size() / (n * 4) : 0); v++) {
+                fprintf(cap_, "\n     TMPv [");
+                for (uint32_t k = 0; k < n * 4; k++) fprintf(cap_, " %g", a.vertices[v * n * 4 + k]);
+                fprintf(cap_, " ]");
+            }
         }
     }
     fputc('\n', cap_);
@@ -2910,14 +2969,15 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
     PerfScope perf_draw{g_perf.draw};
     g_perf.draws++;
     if (cap_) CapStep(s.rt);
-    if (DepthCopy(s)) return;
+#define TMP_DROP(why) do { if (cap_) fprintf(cap_, "DROPPED %s prim %u start %u count %u vs %08X ps %08X indices %d\n", why, prim, start, count, s.vs_handle, s.ps ? s.ps->handle : 0, indices != nullptr); } while (0)
+    if (DepthCopy(s)) { TMP_DROP("depthcopy"); return; }
     DrawEnd draw_end{ext_};
     if (ext_) ext_->BeginDraw(s);
     Assembled& a = asm_;
-    if (!AssembleDraw(s, prim, start, count, indices, a)) return;
+    if (!AssembleDraw(s, prim, start, count, indices, a)) { TMP_DROP("assemble"); return; }
     // past the ring every upload is a buffer of its own: seconds lost on a frame that draws a whole level once
     if (CurrentFrame().used > kUploadSize - kUploadReserve) Submit(true);
-    if (!BindTargets(s)) return;
+    if (!BindTargets(s)) { TMP_DROP("bindtargets"); return; }
     if (ext_ && ext_->Bound(*this, s, bound_rt_, bound_ds_, a.pretransformed) && !BindTargets(s)) return;
 
     // vertex shader
@@ -2928,19 +2988,19 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
 
     // stage textures, then the pixel shader made for them
     DrawTextures stages;
-    if (!BindStageTexturesAndTargets(s, stages)) return;
+    if (!BindStageTexturesAndTargets(s, stages)) { TMP_DROP("stagetextures"); return; }
     PixelKey pk = MakePixelKey(s, stages.info);
     pk.quad = sh.quad;
     sh.pkey = Hash(&pk, sizeof(pk));
     EnsurePixelShader(pk, sh);
-    if (!sh.vs_code || !sh.ps_code) return;
+    if (!sh.vs_code || !sh.ps_code) { TMP_DROP("shadercode"); return; }
 
     // pipeline
     PsoKey k;
     BuildPipelineKey(s, a, sh.vh, sh.ph, k);
     k.sprite = sh.sprite;
     ID3D12PipelineState* pso = EnsurePipeline(k, sh.vs_code, sh.ps_code);
-    if (!pso) return;
+    if (!pso) { TMP_DROP("pso"); return; }
     if (ext_) binds_ = {};  // the extension may set anything
     if (pso != binds_.pso) cl_->SetPipelineState(pso);
     binds_.pso = pso;
