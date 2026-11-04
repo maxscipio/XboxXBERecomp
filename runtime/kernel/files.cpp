@@ -695,10 +695,23 @@ KERNEL_EXPORT(226, NtSetInformationFile, 5) {
             std::string target = ReadAnsiString(in + 8);
             std::string host = ResolvePath(target, root);
             if (host.empty()) return kObjectPathNotFound;
-            if (f->fp) std::fflush(f->fp);
+            // Windows will not rename a file this process holds open
+            bool reopen = f->fp != nullptr;
+            if (f->fp) {
+                std::lock_guard<std::mutex> lock(f->io);
+                std::fclose(f->fp);
+                f->fp = nullptr;
+            }
             fs::rename(f->host, host, ec);
-            if (ec) return kAccessDenied;
-            f->host = host;
+            if (!ec) f->host = host;
+            if (reopen) {
+                f->fp = std::fopen(f->host.string().c_str(), "r+b");
+                if (!f->fp) f->fp = std::fopen(f->host.string().c_str(), "rb");
+            }
+            if (ec) {
+                LOG_FIRST(8, "rename failed: %s", ec.message().c_str());
+                return kAccessDenied;
+            }
             break;
         }
         case 4:  // basic, times and attributes are not kept
