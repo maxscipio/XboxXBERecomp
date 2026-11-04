@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <chrono>
 #include <map>
 #include <thread>
@@ -115,6 +116,38 @@ constexpr uint32_t kStageStates = XDK_TextureState_Stage, kStreamSize = XDK_Stre
 
 gpu::State g_state;
 std::unique_ptr<gpu::Backend> g_backend;
+
+// XDK 4361 numbers its render states differently from the 5849 table gpu/state.h indexes: the deferred block starts at 82
+// and 4 states the 5849 build has between color vertex and the material sources, and 4 more between the sources and
+// ambient, are not there; the complex block starts at 117 where 5849 starts at 136. The library's own defaults give the
+// anchors: fog end and density 1.0 at 85 and 86, the material sources 2, 1, 0, 0 at 96 to 99, point size 1.0 at 106,
+// point size max 64.0 at 113, fill modes at 120 and 121.
+constexpr bool kXdk4361States = XDK_RenderState_Numbering == 4361;
+constexpr uint32_t kNoState = 0xFFFFFFFFu;
+constexpr uint32_t kDeferredFirstGuest = kXdk4361States ? 82 : gpu::kRsDeferredFirst;
+constexpr uint32_t kComplexFirstGuest = kXdk4361States ? 117 : gpu::kRsComplexFirst;
+
+// the guest table slot of a host state, kNoState when this build has none
+constexpr uint32_t GuestSlot(uint32_t host) {
+    if (!kXdk4361States) return host;
+    if (host >= 92 && host <= 105) return host - 10;  // fog to color vertex
+    if (host >= 110 && host <= 113) return host - 14;  // material sources
+    if (host == 115) return 105;                        // ambient
+    if (host >= 116 && host <= 123) return host - 10;  // points
+    if (host >= 136 && host <= 164) return host - 19;  // pixel shader texture modes to rop z read
+    return kNoState;
+}
+
+// the host state of a guest table slot, kNoState when the host keeps none
+constexpr uint32_t HostState(uint32_t guest) {
+    if (!kXdk4361States) return guest;
+    if (guest >= 82 && guest <= 95) return guest + 10;
+    if (guest >= 96 && guest <= 99) return guest + 14;
+    if (guest == 105) return 115;
+    if (guest >= 106 && guest <= 113) return guest + 10;
+    if (guest >= 117 && guest <= 145) return guest + 19;
+    return kNoState;
+}
 std::recursive_mutex g_lock;
 
 // every write to g_state.simple goes through here or marks it
@@ -209,7 +242,10 @@ uint32_t NewSurface(uint32_t w, uint32_t h, uint32_t fmt, uint32_t bpp) {
 
 void SyncDeferred() {
     // deferred states live in the title's memory, the inline SetRenderState and SetTextureStageState write them
-    for (uint32_t i = gpu::kRsDeferredFirst; i < gpu::kRsComplexFirst; i++) g_state.rs[i] = R32(kRenderState + i * 4);
+    for (uint32_t i = kDeferredFirstGuest; i < kComplexFirstGuest; i++) {
+        uint32_t host = HostState(i);
+        if (host < gpu::kRsMax) g_state.rs[host] = R32(kRenderState + i * 4);
+    }
     for (int s = 0; s < 4; s++)
         for (uint32_t i = 0; i < gpu::kTssBumpEnvMat00; i++) g_state.tss[s][i] = R32(kTextureState + (s * kStageStates + i) * 4);
 }
@@ -242,9 +278,13 @@ void UpdateViewportConstants() {
     }
 }
 
+// The guest's render state table ends where D3D_Streams begins; states past that point are kept only on the host
+constexpr uint32_t kRenderStateSlots = (kStreams - kRenderState) / 4;
+
 void SetComplex(uint32_t rs, uint32_t v) {
     g_state.rs[rs] = v;
-    W32(kRenderState + rs * 4, v);
+    uint32_t slot = GuestSlot(rs);
+    if (slot < kRenderStateSlots) W32(kRenderState + slot * 4, v);  // titles read their states back from the library's table
 }
 
 // The library's default render and texture stage states; its pushes land in the scratch buffer
@@ -283,8 +323,8 @@ void SetFrameBuffers(const char* caller, uint32_t pp) {
             LOGE("d3d: renderer init failed");
             // no owner window: this runs on the title's thread and the window may already be fullscreen over the box
             MessageBoxW(nullptr,
-                        L"Direct3D 12 could not be started. Make sure your graphics card supports it and its driver "
-                        L"is up to date.",
+                        L"The graphics backend could not be started. Make sure your graphics card supports Vulkan 1.3 "
+                        L"(or Direct3D 12 with XBE_BACKEND=d3d12) and its driver is up to date.",
                         app::kGame.short_title, MB_ICONERROR | MB_TOPMOST);
             kernel::Shutdown(1);
         }
@@ -308,6 +348,18 @@ void SetFrameBuffers(const char* caller, uint32_t pp) {
     g_state.rt = SurfaceOf(g_buffers[1]);
     g_state.zs = SurfaceOf(g_depth);
     UpdateViewportConstants();
+}
+
+// The guest kicks the push buffer by setting bit 16 at pusher+0x100410 and spins until the GPU clears it. The
+// device init that points CDevice+0x2268 at the pusher is replaced by the HLE, so the host supplies the block.
+constexpr uint32_t kDevPusher = 0x2268, kDevPusherCtrl = 0x2264, kPusherKickWait = 0x100410, kPusherKickBit = 0x10000;
+
+void PusherAck(uint32_t block) {
+    volatile uint32_t* wait = static_cast<volatile uint32_t*>(HostPtr(block + kPusherKickWait));
+    for (;;) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if (*wait & kPusherKickBit) *wait &= ~kPusherKickBit;
+    }
 }
 
 constexpr bool kVBlank = XDK_CDevice_VBlankCount != xdk::kUnknown && XDK_CDevice_VBlankEvent != xdk::kUnknown &&
@@ -355,7 +407,7 @@ HLE_STDCALL(Direct3D_CreateDevice, 6) {
                 XDK_DATA(D3D_DeferredTextureState), XDK_DATA(D3D_RenderState), XDK_DATA(D3D_Streams),
                 XDK_DATA(D3D_SimpleRenderStateEncode));
     XDK_REQUIRE("d3d", XDK_KEY(CDevice_Push), XDK_KEY(CDevice_PushThreshold), XDK_KEY(CDevice_BaseVertex),
-                XDK_KEY(CDevice_IndexBuffer), XDK_KEY(CDevice_ZScale), XDK_KEY(CDevice_SuperSampleX),
+                XDK_KEY(CDevice_ZScale), XDK_KEY(CDevice_SuperSampleX),
                 XDK_KEY(CDevice_SuperSampleY), XDK_KEY(CDevice_Transforms), XDK_KEY(CDevice_Textures),
                 XDK_KEY(CDevice_RenderTarget), XDK_KEY(CDevice_Depth), XDK_KEY(CDevice_BackBuffer),
                 XDK_KEY(CDevice_FrontBuffer), XDK_KEY(CDevice_SwapCount), XDK_KEY(CDevice_Size),
@@ -364,6 +416,10 @@ HLE_STDCALL(Direct3D_CreateDevice, 6) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     std::memset(HostPtr(kDevice), 0, XDK_CDevice_Size);
     W32(kDevicePtr, kDevice);
+    const uint32_t pusher = mem::AllocSystem(kPusherKickWait + 4);
+    SetDev(kDevPusher, pusher);
+    SetDev(kDevPusherCtrl, mem::AllocSystem(0x100));
+    std::thread(PusherAck, pusher).detach();
     ScratchPush();
     g_state = gpu::State{};
     gpu::MarkAllSimple();
@@ -423,6 +479,7 @@ HLE_STDCALL(D3D_BlockOnResource, 1) {
 }
 // lock(resource, face, level, locked, rect, flags): D3DLOCK_NOOVERWRITE skips the block above, yet a
 // title may read what the GPU drew
+#if HAS_Lock2DSurface
 HLE_WRAP(Lock2DSurface, 6) {
     uint32_t res = a[0];
     if ((a[5] & 0x20) && res && g_backend) {  // D3DLOCK_NOOVERWRITE
@@ -430,6 +487,7 @@ HLE_WRAP(Lock2DSurface, 6) {
         g_backend->SyncLate(mem::VirtualFromPhysical(R32(res + 4)));
     }
 }
+#endif
 HLE_STDCALL(D3DResource_BlockUntilNotBusy, 1) {
     if (a[0] && g_backend) {
         std::lock_guard<std::recursive_mutex> lock(g_lock);
@@ -612,6 +670,11 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
         app::FinishHandover();
     }
     std::lock_guard<std::recursive_mutex> lock(g_lock);
+    // a title's start screen of the host (GameInfo::hold): the frame shown so far stays up under its ui
+    while (app::kGame.hold && app::kGame.hold()) {
+        if (g_backend) g_backend->Present(SurfaceOf(g_buffers[1]), true);
+        app::Pace();
+    }
     g_presents++;
     // the kept display is shown until the title presents its own
     kernel::SetSavedDataAddress(0);
@@ -624,7 +687,11 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
         }
     }
     Walk(Dev(kDevPush));  // reports asked for at the end of the frame
-    if (g_backend) g_backend->Present(SurfaceOf(g_buffers[1]));
+    // a title shown at fewer frames than it steps (g_show_every > 1) shows one swap in that many
+    static uint32_t s_swaps = 0;
+    uint32_t every = app::g_show_every;
+    bool show = every <= 1 || s_swaps++ % every == 0;
+    if (g_backend) g_backend->Present(SurfaceOf(g_buffers[1]), show);
     app::Pace();
     // like the XDK, the surfaces stay put and their memory rotates: titles keep back buffer pointers and copy its data
     uint32_t last = g_buffers[g_buffer_count - 1], data = R32(last + 4), lk = R32(last + 8);
@@ -697,12 +764,14 @@ HLE_FASTCALL(D3DDevice_SetRenderState_Simple, 0) {
 
 HLE_STDCALL(D3DDevice_SetRenderStateNotInline, 2) {
     uint32_t rs = a[0], v = a[1];
-    if (rs < gpu::kRsDeferredFirst) {
+    if (rs < kDeferredFirstGuest) {
         uint32_t method = R32(kSimpleEncode + rs * 4) & 0x1FFC;
         SetSimple(method, v);
         W32(kRenderState + rs * 4, v);  // titles read their states back from the library's table
-    } else if (rs < gpu::kRsMax) {
-        SetComplex(rs, v);
+    } else if (uint32_t host = HostState(rs); host < gpu::kRsMax) {
+        SetComplex(host, v);
+    } else if (rs < kRenderStateSlots) {
+        W32(kRenderState + rs * 4, v);
     }
     return 0;
 }
@@ -717,7 +786,16 @@ COMPLEX_STATE(VertexBlend, gpu::kRsVertexBlend)
 COMPLEX_STATE(FogColor, gpu::kRsFogColor)
 COMPLEX_STATE(FillMode, gpu::kRsFillMode)
 COMPLEX_STATE(BackFillMode, gpu::kRsBackFillMode)
-COMPLEX_STATE(TwoSidedLighting, gpu::kRsTwoSidedLighting)
+// XDK 4361 builds the back polygon mode from this state and has no colour switch behind it, so the host keeps its
+// two-sided colour path off and only the library's table sees the value
+HLE_STDCALL(D3DDevice_SetRenderState_TwoSidedLighting, 1) {
+    if (kXdk4361States) {
+        W32(kRenderState + GuestSlot(gpu::kRsTwoSidedLighting) * 4, a[0]);
+    } else {
+        SetComplex(gpu::kRsTwoSidedLighting, a[0]);
+    }
+    return 0;
+}
 COMPLEX_STATE(NormalizeNormals, gpu::kRsNormalizeNormals)
 COMPLEX_STATE(ZEnable, gpu::kRsZEnable)
 COMPLEX_STATE(StencilEnable, gpu::kRsStencilEnable)
@@ -858,8 +936,10 @@ HLE_STDCALL(D3DDevice_SetStreamSource, 3) {
     return 0;
 }
 
+// Burnout never calls SetIndices and its XBE has no code that reads the IB slot, so these keys are
+// only checked here, not at device creation.
 HLE_STDCALL(D3DDevice_SetIndices, 2) {
-    XDK_REQUIRE("d3d", XDK_DATA(D3D_IndexData));
+    XDK_REQUIRE("d3d", XDK_DATA(D3D_IndexData), XDK_KEY(CDevice_IndexBuffer));
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     uint32_t ib = a[0];
     uint32_t old = Dev(kDevIndexBuffer);
@@ -1181,7 +1261,7 @@ HLE_STDCALL(D3DDevice_SetPixelShaderConstant, 3) {
 
 HLE_STDCALL(D3DDevice_DrawVertices, 3) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
-    Walk(Dev(kDevPush));  // a visibility test begun since the last draw counts this one
+    Walk(Dev(kDevPush));  // render states pushed before this draw, and a visibility test begun since the last draw
     SyncDeferred();
     if (g_backend) g_backend->Draw(g_state, a[0], a[1], a[2], nullptr);
     return 0;
@@ -1383,7 +1463,9 @@ void Walk(uint32_t end) {
             uint32_t m = head & 0x40000000 ? method : method + i * 4;
             uint32_t v = R32(p);
             ApplyVisibilityMethod(m, v);
-            if (!ApplyConstant(m, v)) ApplyImmediate(m, v);
+            if (!ApplyConstant(m, v) && !ApplyImmediate(m, v) && m != 0x1818 && m >> 2 < g_state.simple.size()) {
+                SetSimple(m, v);
+            }
         }
     }
     g_walk = end;
@@ -1395,6 +1477,25 @@ HLE_STDCALL(D3DDevice_DrawVerticesUP, 4) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
     Walk(Dev(kDevPush));
     DrawUp(a[0], a[1], HostPtr(a[2]), a[3]);
+    return 0;
+}
+
+// DrawIndexedVerticesUP(prim, count, indices, vertices, stride): 16 bit indices into the user vertices. The
+// vertices up to the highest index are copied to the ring; the library's own version reads the device stride
+// that only its state setup fills in, which this build does not run.
+HLE_STDCALL(D3DDevice_DrawIndexedVerticesUP, 5) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Walk(Dev(kDevPush));
+    uint32_t prim = a[0], count = a[1], indices_addr = a[2], vertices_addr = a[3], stride = a[4];
+    if (!g_backend || !count || !stride || !indices_addr || !vertices_addr) return 0;
+    const uint16_t* indices = static_cast<const uint16_t*>(HostPtr(indices_addr));
+    uint32_t reach = 0;
+    for (uint32_t i = 0; i < count; i++) reach = std::max<uint32_t>(reach, indices[i] + 1u);
+    SyncDeferred();
+    auto stream = g_state.streams[0];
+    g_state.streams[0] = {UpVertices(HostPtr(vertices_addr), reach * stride), stride};
+    g_backend->Draw(g_state, prim, 0, count, reinterpret_cast<const uint8_t*>(indices));
+    g_state.streams[0] = stream;
     return 0;
 }
 
@@ -1466,6 +1567,13 @@ HLE_STDCALL(D3DDevice_RunPushBuffer, 2) {
     Walk(Dev(kDevPush));
     if (size >= 4) RunCommands(data, data + size - 4);
     return 0;
+}
+
+// The guest's push-segment slow path (0x12D7C0) reads per-device segment tables this host never builds.
+// Its job is to flush what was written so far and start a fresh segment, which ScratchPush already does.
+HLE_STDCALL(D3D_PushSegment, 2) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    return ScratchPush(a[1]);
 }
 
 // frame buffer compression tiles are the console's memory controller's business

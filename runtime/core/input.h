@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <string>
 
 namespace input {
 
@@ -15,6 +16,11 @@ void Init();  // window thread, before boot; the game code window starts it earl
 uint16_t HeldOnAnyController();  // face buttons as XINPUT_GAMEPAD_A/B/X/Y masks, GameInfo::pad left out
 // the controller on that port, then GameInfo::pad
 Pad Poll(int port);
+// the controller as SDL reads it, before GameInfo::pad
+Pad PollRaw(int port);
+// the controller's SDL GUID and name, empty without one on that port
+std::string DeviceId(int port);
+std::string DeviceName(int port);
 void Rumble(int port, uint16_t left, uint16_t right);
 
 }  // namespace input

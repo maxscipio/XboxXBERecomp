@@ -19,6 +19,7 @@ namespace {
 std::mutex g_lock;
 bool g_sdl = false;
 SDL_Gamepad* g_pads[4] = {};
+std::string g_ids[4], g_names[4];
 
 void AddPad(SDL_JoystickID id) {
     for (SDL_Gamepad* pad : g_pads)
@@ -28,6 +29,11 @@ void AddPad(SDL_JoystickID id) {
     *slot = SDL_OpenGamepad(id);
     const char* name = *slot ? SDL_GetGamepadName(*slot) : SDL_GetError();
     LOGI("input: controller %d %s: %s", int(slot - g_pads) + 1, *slot ? "plugged in" : "failed to open", name ? name : "");
+    if (!*slot) return;
+    char guid[64] = {};
+    SDL_GUIDToString(SDL_GetJoystickGUID(SDL_GetGamepadJoystick(*slot)), guid, sizeof(guid));
+    g_ids[slot - g_pads] = guid;
+    g_names[slot - g_pads] = name ? name : "";
 }
 
 void RemovePad(SDL_JoystickID id) {
@@ -35,6 +41,8 @@ void RemovePad(SDL_JoystickID id) {
         if (!g_pads[i] || SDL_GetGamepadID(g_pads[i]) != id) continue;
         SDL_CloseGamepad(g_pads[i]);
         g_pads[i] = nullptr;
+        g_ids[i].clear();
+        g_names[i].clear();
         LOGI("input: controller %d unplugged", i + 1);
     }
 }
@@ -55,22 +63,33 @@ void UpdatePads() {
 
 }  // namespace
 
+// SDL has no gamepad mapping for this pad, so it stays a plain joystick. Button and axis numbers come from
+// the pad's DirectInput layout. Triggers rest at -1 and read on the positive half.
+constexpr char kPadMapping[] =
+    "03008b3bd620000011a7000013056800,Core (Plus) Wired Controller,"
+    "a:b0,b:b1,x:b2,y:b3,leftshoulder:b9,rightshoulder:b10,lefttrigger:+a4,righttrigger:+a5,"
+    "back:b4,start:b6,leftstick:b7,rightstick:b8,"
+    "dpup:b11,dpdown:b12,dpleft:b13,dpright:b14,"
+    "leftx:a0,lefty:a1,rightx:a2,righty:a3,platform:Windows";
+
 void Init() {
     if (g_sdl) return;  // started already for the game code window
-    // WGI reads the triggers apart and HIDAPI takes PlayStation and Switch pads. Reads come from the guest's threads,
+    // WGI reads the triggers apart and HIDAPI takes PlayStation and Switch pads. DirectInput is the only path for
+    // generic HID pads such as third-party Switch-licensed controllers. Reads come from the guest's threads,
     // so SDL's own thread takes the device notices.
     SDL_SetHint(SDL_HINT_JOYSTICK_THREAD, "1");
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     SDL_SetHint(SDL_HINT_JOYSTICK_WGI, "1");
     SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT, "0");
     SDL_SetHint(SDL_HINT_XINPUT_ENABLED, "0");
-    SDL_SetHint(SDL_HINT_JOYSTICK_DIRECTINPUT, "0");
+    SDL_SetHint(SDL_HINT_JOYSTICK_DIRECTINPUT, "1");
     if (!SDL_Init(SDL_INIT_GAMEPAD)) {
         LOGE("input: SDL failed to start, no controllers: %s", SDL_GetError());
         return;
     }
     int v = SDL_GetVersion();
     LOGI("input: SDL %d.%d.%d", SDL_VERSIONNUM_MAJOR(v), SDL_VERSIONNUM_MINOR(v), SDL_VERSIONNUM_MICRO(v));
+    if (SDL_AddGamepadMapping(kPadMapping) < 0) LOGE("input: pad mapping rejected: %s", SDL_GetError());
     std::lock_guard lock(g_lock);
     g_sdl = true;
     int count = 0;
@@ -80,7 +99,23 @@ void Init() {
     }
 }
 
+std::string DeviceId(int port) {
+    std::lock_guard lock(g_lock);
+    return port >= 0 && port < 4 ? g_ids[port] : std::string();
+}
+
+std::string DeviceName(int port) {
+    std::lock_guard lock(g_lock);
+    return port >= 0 && port < 4 ? g_names[port] : std::string();
+}
+
 Pad Poll(int port) {
+    Pad p = PollRaw(port);
+    if (app::kGame.pad) app::kGame.pad(port, p);
+    return p;
+}
+
+Pad PollRaw(int port) {
     Pad p;
     {
         std::lock_guard lock(g_lock);
@@ -109,7 +144,6 @@ Pad Poll(int port) {
             p.ry = int16_t(-1 - axis(SDL_GAMEPAD_AXIS_RIGHTY));
         }
     }
-    if (app::kGame.pad) app::kGame.pad(port, p);
     return p;
 }
 

@@ -87,6 +87,8 @@ public:
     virtual void Constants(float (*/*vsc*/)[4], float* /*ext*/, const Target* /*rt*/, uint32_t /*src_blend*/) {}
     // a target with range other than 1 is read, copied or presented
     virtual void Resolve(Context&, Target&) {}
+    // the frame about to be shown: a texture (in a pixel shader resource state, format fmt) to show instead, or null
+    virtual ID3D12Resource* Present(Context&, Target&, DXGI_FORMAT& /*fmt*/) { return nullptr; }
 };
 
 inline std::unique_ptr<Extension> g_extension;

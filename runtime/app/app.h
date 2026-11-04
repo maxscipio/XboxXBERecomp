@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <mutex>
@@ -98,10 +99,17 @@ struct GameInfo {
     void (*ui)(double fps);        // each frame inside the ImGui frame, UiLock held
     void (*pad)(int port, input::Pad& pad);  // a polled pad before the game gets it
     void (*rumble)(int port, uint16_t& left, uint16_t& right);
+    // the game's first presented frame onward: true keeps the game waiting, the ui still drawn each frame
+    bool (*hold)();
 };
 extern const GameInfo kGame;
 
 // sleeps out the rest of the frame for the fps cap
 void Pace();
+
+// A title that steps its game once per Swap sets these (any thread): the steps per second Pace holds to instead of
+// the fps cap (0: the cap), and how many steps make one shown frame (1: every step is shown).
+inline std::atomic<uint32_t> g_step_rate{0};
+inline std::atomic<uint32_t> g_show_every{1};
 
 }  // namespace app

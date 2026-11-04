@@ -26,7 +26,8 @@ public:
     virtual void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) = 0;
     virtual void Copy(const Surface& src, const Surface& dst, uint32_t count, uint32_t src_rects_va,
                       uint32_t dst_points_va) = 0;
-    virtual void Present(const Surface& front) = 0;
+    // show false: the frame is finished as usual but not put on screen (a title shown at half its step rate)
+    virtual void Present(const Surface& front, bool show) = 0;
     // the CPU is about to touch this resource's memory: write GPU results back first
     virtual void Sync(uint32_t data_va, uint32_t size) = 0;
     // a lock that does not wait for the GPU (NOOVERWRITE): a result a frame or two old is what the console gives too
@@ -55,7 +56,10 @@ private:
     uint32_t fence_ = 0;
 };
 
+// XBE_BACKEND=vulkan|d3d12 picks one (Vulkan by default); the others are what each backend file provides
 std::unique_ptr<Backend> CreateBackend();
+std::unique_ptr<Backend> CreateD3D12Backend();
+std::unique_ptr<Backend> CreateVulkanBackend();
 // the same backend driven from a thread of its own: calls return once recorded
 std::unique_ptr<Backend> CreateThreadedBackend(std::unique_ptr<Backend> inner);
 

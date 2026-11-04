@@ -128,6 +128,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_KEYDOWN:
             if (wp == VK_F3) DumpThreads();
+            if (wp == VK_ESCAPE) PostMessageW(hwnd, WM_CLOSE, 0, 0);
             return 0;
         case WM_ACTIVATE:
             if (LOWORD(wp) == WA_INACTIVE) {
@@ -223,7 +224,7 @@ uint32_t RefreshRate() {
 void Pace() {
     using clock = std::chrono::steady_clock;
     static clock::time_point next = clock::now();
-    uint32_t cap = Get().fps_cap;
+    uint32_t cap = g_step_rate ? g_step_rate.load() : Get().fps_cap;
     if (cap == kFpsCapRefresh) cap = RefreshRate();
     auto now = clock::now();
     if (!cap) {

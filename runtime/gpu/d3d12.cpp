@@ -10,6 +10,7 @@
 #include <d3d12sdklayers.h>
 #include <d3dcompiler.h>
 #include <dxgi1_6.h>
+#include <wincodec.h>
 #include <wrl/client.h>
 
 #include <algorithm>
@@ -37,6 +38,7 @@
 #include "gpu/shaders.h"
 #include "gpu/texture.h"
 #include "gpu/texturedumper.h"
+#include "gpu/ui.h"
 #include "gpu/vertex.h"
 #include "kernel/kernel.h"
 
@@ -45,6 +47,9 @@ using Microsoft::WRL::ComPtr;
 namespace gpu {
 
 namespace {
+
+class D3D12Backend;
+D3D12Backend* g_ui_backend = nullptr;
 
 constexpr int kFrames = 3;
 constexpr uint64_t kStaleFrames = 8;  // frames a target may go unused and still be read back
@@ -454,12 +459,17 @@ struct GuestExtent {
 
 class D3D12Backend final : public Backend, public Context {
 public:
+    ~D3D12Backend() override {
+        if (g_ui_backend == this) g_ui_backend = nullptr;
+    }
+
     bool Init(uint32_t width, uint32_t height) override;
+    ImTextureID LoadUiImage(const std::filesystem::path& path);
     void Clear(const State& s, uint32_t count, const uint8_t* rects, uint32_t flags, uint32_t color, float z,
                uint32_t stencil) override;
     void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) override;
     void Copy(const Surface& src, const Surface& dst, uint32_t count, uint32_t src_rects, uint32_t dst_points) override;
-    void Present(const Surface& front) override;
+    void Present(const Surface& front, bool show) override;
     void WaitGpuFrame(uint64_t n) override;
     void Sync(uint32_t data, uint32_t size) override;
     void SyncLate(uint32_t data) override;
@@ -549,6 +559,8 @@ private:
     ID3D12Resource* BindTexture(const State& s, int stage, DrawTextures& stages);
     ID3D12Resource* BindTargetTexture(const State& s, int stage, const TextureDesc& d, Target& t, bool box,
                                       DrawTextures& stages);
+    ID3D12Resource* BindCubeTargets(int stage, const TextureDesc& d, const FormatInfo& fi, uint64_t alt,
+                                    DrawTextures& stages);
     ID3D12Resource* BindGuestTexture(const State& s, int stage, const TextureDesc& d, const FormatInfo& fi,
                                      DrawTextures& stages);
     bool CreateTexture(Tex& tx, const TextureDesc& d, const FormatInfo& fi, uint64_t key);
@@ -615,7 +627,7 @@ private:
     void ResizeSwap();
     void UploadGammaRamp();
     void DrawFrame(Target* t, uint32_t bi);
-    void BlitFrame(Target& t);
+    void BlitFrame(Target& t, ID3D12Resource* shown, DXGI_FORMAT shown_fmt);
     void RenderUi();
     void ReleaseOldTextures();
     void ResetFrame();
@@ -720,6 +732,11 @@ private:
     uint32_t smp_inc_ = 0;
     uint32_t rtv_inc_ = 0;
     uint32_t dsv_inc_ = 0;
+    uint32_t ui_inc_ = 0;
+    ComPtr<ID3D12Resource> ui_image_;
+    ComPtr<ID3D12Resource> ui_image_upload_;
+    D3D12_RESOURCE_STATES ui_image_state_ = D3D12_RESOURCE_STATE_COPY_DEST;
+    ImTextureID ui_image_id_ = nullptr;
     std::vector<uint32_t> free_rtv_;
     std::vector<uint32_t> free_dsv_;
     ComPtr<ID3D12RootSignature> root_;
@@ -823,8 +840,126 @@ bool D3D12Backend::Init(uint32_t width, uint32_t height) {
                         ui_heap_->GetCPUDescriptorHandleForHeapStart(), ui_heap_->GetGPUDescriptorHandleForHeapStart());
     LoadSettings();
     Begin();
+    g_ui_backend = this;
     LOGI("d3d12: %ux%u guest, %ux%u window, render scale %.3f", width, height, bb_w_, bb_h_, scale_);
     return true;
+}
+
+ImTextureID D3D12Backend::LoadUiImage(const std::filesystem::path& path) {
+    if (ui_image_id_) return ui_image_id_;
+
+    HRESULT com_result = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    if (FAILED(com_result) && com_result != RPC_E_CHANGED_MODE) {
+        LOGE("d3d12: could not initialize COM for launcher image (0x%08X)", static_cast<unsigned>(com_result));
+        return nullptr;
+    }
+    struct ComUninitializer {
+        bool active;
+        ~ComUninitializer() {
+            if (active) CoUninitialize();
+        }
+    } com_uninitializer{SUCCEEDED(com_result)};
+
+    auto fail = [&path](const char* operation, HRESULT hr) {
+        LOGE("d3d12: launcher image %s failed for %ls (0x%08X)", operation, path.c_str(), static_cast<unsigned>(hr));
+        return ImTextureID{};
+    };
+
+    Microsoft::WRL::ComPtr<IWICImagingFactory> factory;
+    HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory));
+    if (FAILED(hr)) return fail("decoder initialization", hr);
+    Microsoft::WRL::ComPtr<IWICBitmapDecoder> decoder;
+    hr = factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &decoder);
+    if (FAILED(hr)) return fail("open", hr);
+    Microsoft::WRL::ComPtr<IWICBitmapFrameDecode> frame;
+    hr = decoder->GetFrame(0, &frame);
+    if (FAILED(hr)) return fail("frame read", hr);
+
+    UINT width = 0, height = 0;
+    hr = frame->GetSize(&width, &height);
+    if (FAILED(hr)) return fail("size read", hr);
+    if (!width || !height || width > 8192 || height > 8192) {
+        LOGE("d3d12: launcher image has unsupported dimensions %ux%u", width, height);
+        return nullptr;
+    }
+    uint64_t pixel_bytes = uint64_t(width) * height * 4;
+    if (pixel_bytes > SIZE_MAX) {
+        LOGE("d3d12: launcher image is too large (%ux%u)", width, height);
+        return nullptr;
+    }
+
+    Microsoft::WRL::ComPtr<IWICFormatConverter> converter;
+    hr = factory->CreateFormatConverter(&converter);
+    if (FAILED(hr)) return fail("pixel converter creation", hr);
+    hr = converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone, nullptr, 0,
+                               WICBitmapPaletteTypeCustom);
+    if (FAILED(hr)) return fail("pixel conversion", hr);
+
+    std::vector<uint8_t> pixels(static_cast<size_t>(pixel_bytes), uint8_t{});
+    hr = converter->CopyPixels(nullptr, width * 4, UINT(pixel_bytes), pixels.data());
+    if (FAILED(hr)) return fail("pixel read", hr);
+
+    D3D12_RESOURCE_DESC texture_desc{};
+    texture_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    texture_desc.Width = width;
+    texture_desc.Height = height;
+    texture_desc.DepthOrArraySize = 1;
+    texture_desc.MipLevels = 1;
+    texture_desc.Format = kBgra;
+    texture_desc.SampleDesc.Count = 1;
+    texture_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    D3D12_HEAP_PROPERTIES default_heap{};
+    default_heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    hr = dev_->CreateCommittedResource(&default_heap, D3D12_HEAP_FLAG_NONE, &texture_desc,
+                                       D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&ui_image_));
+    if (FAILED(hr)) return fail("GPU texture creation", hr);
+
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+    UINT64 upload_size = 0;
+    dev_->GetCopyableFootprints(&texture_desc, 0, 1, 0, &footprint, nullptr, nullptr, &upload_size);
+    D3D12_RESOURCE_DESC upload_desc{};
+    upload_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    upload_desc.Width = upload_size;
+    upload_desc.Height = 1;
+    upload_desc.DepthOrArraySize = 1;
+    upload_desc.MipLevels = 1;
+    upload_desc.SampleDesc.Count = 1;
+    upload_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    D3D12_HEAP_PROPERTIES upload_heap{};
+    upload_heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    hr = dev_->CreateCommittedResource(&upload_heap, D3D12_HEAP_FLAG_NONE, &upload_desc,
+                                       D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&ui_image_upload_));
+    if (FAILED(hr)) return fail("upload buffer creation", hr);
+
+    uint8_t* mapped = nullptr;
+    D3D12_RANGE read_range{0, 0};
+    hr = ui_image_upload_->Map(0, &read_range, reinterpret_cast<void**>(&mapped));
+    if (FAILED(hr)) return fail("upload buffer mapping", hr);
+    const size_t row_bytes = size_t(width) * 4;
+    for (UINT y = 0; y < height; y++)
+        std::memcpy(mapped + footprint.Offset + size_t(y) * footprint.Footprint.RowPitch,
+                    pixels.data() + size_t(y) * row_bytes, row_bytes);
+    ui_image_upload_->Unmap(0, nullptr);
+
+    D3D12_TEXTURE_COPY_LOCATION destination{};
+    destination.pResource = ui_image_.Get();
+    destination.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    D3D12_TEXTURE_COPY_LOCATION source{};
+    source.pResource = ui_image_upload_.Get();
+    source.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    source.PlacedFootprint = footprint;
+    cl_->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
+    Transition(ui_image_.Get(), ui_image_state_, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC view{};
+    view.Format = kBgra;
+    view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    view.Texture2D.MipLevels = 1;
+    dev_->CreateShaderResourceView(ui_image_.Get(), &view, Cpu(ui_heap_.Get(), 1, ui_inc_));
+    D3D12_GPU_DESCRIPTOR_HANDLE handle = Gpu(ui_heap_.Get(), 1, ui_inc_);
+    ui_image_id_ = reinterpret_cast<ImTextureID>(uintptr_t(handle.ptr));
+    return ui_image_id_;
 }
 
 bool D3D12Backend::CreateDevice() {
@@ -903,7 +1038,7 @@ void D3D12Backend::CreateHeaps() {
     smp_inc_ = CreateHeap(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, kSamplerCount, true, smp_heap_);
     rtv_inc_ = CreateHeap(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, kRtvCount + kFrames, false, rtv_heap_);
     dsv_inc_ = CreateHeap(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, kDsvCount, false, dsv_heap_);
-    CreateHeap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1, true, ui_heap_);
+    ui_inc_ = CreateHeap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 2, true, ui_heap_);
     for (uint32_t i = kRtvCount; i-- > 0;) free_rtv_.push_back(i);
     for (uint32_t i = kDsvCount; i-- > 0;) free_dsv_.push_back(i);
 }
@@ -1933,6 +2068,58 @@ void D3D12Backend::ReleasePackTextures() {
     pack_textures_.clear();
 }
 
+// a cube whose six faces are render targets: the faces are copied into one cube texture, null when they are not all targets
+ID3D12Resource* D3D12Backend::BindCubeTargets(int stage, const TextureDesc& d, const FormatInfo& fi, uint64_t alt,
+                                              DrawTextures& stages) {
+    if (d.levels != 1) return nullptr;
+    const uint32_t stride = TotalSize(d) / 6;
+    Target* faces[6];
+    for (uint32_t f = 0; f < 6; f++) {
+        auto it = targets_.find(SizedTargetKey(d.data + f * stride, false, d.width, d.height) | alt);
+        if (it == targets_.end() || it->second.depth || it->second.gw != d.width || it->second.gh != d.height) return nullptr;
+        if (&it->second == draw_rt_ || &it->second == draw_ds_) return nullptr;
+        faces[f] = &it->second;
+        if (f && (faces[f]->w != faces[0]->w || faces[f]->h != faces[0]->h || faces[f]->fmt != faces[0]->fmt)) return nullptr;
+    }
+    const uint32_t fw = faces[0]->w, fh = faces[0]->h;
+    const DXGI_FORMAT fmt = faces[0]->fmt;
+    // apart from the guest upload of the same cube, which keys on the address alone
+    const uint64_t key = uint64_t(1) << 63 | d.data;
+    Tex& tx = textures_[key];
+    const D3D12_RESOURCE_DESC cur = tx.res ? tx.res->GetDesc() : D3D12_RESOURCE_DESC{};
+    const bool same = tx.res && cur.Width == fw && cur.Height == fh && cur.Format == fmt;
+    if (!same) {
+        if (tx.res) CurrentFrame().garbage.push_back(tx.res);
+        tx = Tex{};
+        tx.d = d;
+        tx.fmt = fmt;
+        D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+        D3D12_RESOURCE_DESC td = Texture2DDesc(fmt, fw, fh);
+        td.DepthOrArraySize = 6;
+        if (FAILED(dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                 IID_PPV_ARGS(&tx.res)))) {
+            textures_.erase(key);
+            return nullptr;
+        }
+    }
+    D3D12_RESOURCE_STATES st = same ? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_COPY_DEST;
+    Transition(tx.res.Get(), st, D3D12_RESOURCE_STATE_COPY_DEST);
+    for (uint32_t f = 0; f < 6; f++) {
+        Target& t = *faces[f];
+        const D3D12_RESOURCE_STATES before = t.state;
+        Transition(t.res.Get(), t.state, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        D3D12_TEXTURE_COPY_LOCATION dl{tx.res.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+        dl.SubresourceIndex = f;
+        D3D12_TEXTURE_COPY_LOCATION sl{t.res.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+        cl_->CopyTextureRegion(&dl, 0, 0, 0, &sl, nullptr);
+        Transition(t.res.Get(), t.state, before);
+    }
+    Transition(tx.res.Get(), st, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    FillTextureView(tx, d, stages.sv[stage]);
+    if (ext_) ext_->Sampled(d, nullptr, tx.flags, stages.info[stage]);
+    return tx.res.Get();
+}
+
 ID3D12Resource* D3D12Backend::BindTexture(const State& s, int stage, DrawTextures& stages) {
     TexInfo& info = stages.info[stage];
     D3D12_SHADER_RESOURCE_VIEW_DESC& sv = stages.sv[stage];
@@ -1956,6 +2143,9 @@ ID3D12Resource* D3D12Backend::BindTexture(const State& s, int stage, DrawTexture
     bool box = true;
     if (ext_) ext_->Sample(d.data, fi.depth, stage, alt, stages.k[stage], box);
     auto tit = targets_.find(SizedTargetKey(d.data, fi.depth, d.width, d.height) | alt);
+    if (tit != targets_.end() && d.cube && d.depth == 1 && !fi.compressed) {
+        if (ID3D12Resource* r = BindCubeTargets(stage, d, fi, alt, stages)) return r;
+    }
     if (tit != targets_.end() && !d.cube && d.depth == 1 && !fi.compressed) {
         return BindTargetTexture(s, stage, d, tit->second, box, stages);
     }
@@ -3223,7 +3413,7 @@ void D3D12Backend::UploadGammaRamp() {
     cl_->CopyTextureRegion(&dl, 0, 0, 0, &sl, nullptr);
 }
 
-void D3D12Backend::BlitFrame(Target& t) {
+void D3D12Backend::BlitFrame(Target& t, ID3D12Resource* shown, DXGI_FORMAT shown_fmt) {
     // 16:9 when the console reports a widescreen display, else 4:3
     bool wide = app::Widescreen();
     float aspect = wide ? 16.0f / 9.0f : 4.0f / 3.0f;
@@ -3237,6 +3427,10 @@ void D3D12Backend::BlitFrame(Target& t) {
     cl_->RSSetViewports(1, &vp);
     cl_->RSSetScissorRects(1, &scissor);
     binds_ = {};
+    if (shown) {
+        Blit(shown, shown_fmt, uv, {.gamma = gamma_});
+        return;
+    }
     Transition(t.res.Get(), t.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     Blit(t.res.Get(), t.fmt, uv, {.gamma = gamma_});
 }
@@ -3254,6 +3448,13 @@ void D3D12Backend::RenderUi() {
 }
 
 void D3D12Backend::DrawFrame(Target* t, uint32_t bi) {
+    // the extension's passes run before the back buffer is bound
+    ID3D12Resource* shown = nullptr;
+    DXGI_FORMAT shown_fmt = DXGI_FORMAT_B8G8R8A8_UNORM;
+    if (t && ext_) {
+        shown_fmt = t->fmt;
+        shown = ext_->Present(*this, *t, shown_fmt);
+    }
     D3D12_RESOURCE_STATES bs = D3D12_RESOURCE_STATE_PRESENT;
     Transition(bb_[bi].Get(), bs, D3D12_RESOURCE_STATE_RENDER_TARGET);
     D3D12_CPU_DESCRIPTOR_HANDLE rh = Cpu(rtv_heap_.Get(), kRtvCount + bi, rtv_inc_);
@@ -3261,7 +3462,7 @@ void D3D12Backend::DrawFrame(Target* t, uint32_t bi) {
     cl_->ClearRenderTargetView(rh, black, 0, nullptr);
     cl_->OMSetRenderTargets(1, &rh, FALSE, nullptr);
     bound_rt_ = bound_ds_ = nullptr;
-    if (t) BlitFrame(*t);
+    if (t) BlitFrame(*t, shown, shown_fmt);
     RenderUi();
     Transition(bb_[bi].Get(), bs, D3D12_RESOURCE_STATE_PRESENT);
 }
@@ -3344,7 +3545,7 @@ void LogPerf() {
     }
 }
 
-void D3D12Backend::Present(const Surface& front) {
+void D3D12Backend::Present(const Surface& front, bool show) {
     PerfScope perf_present{g_perf.present};
     if (cap_) {
         FinishCapture(front);
@@ -3358,22 +3559,23 @@ void D3D12Backend::Present(const Surface& front) {
     if (ramp_dirty_) UploadGammaRamp();
     Transition(lut_.Get(), lut_state_, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
-    uint32_t bi = swap_->GetCurrentBackBufferIndex();
-    DrawFrame(t, bi);
+    if (show) DrawFrame(t, swap_->GetCurrentBackBufferIndex());
     Submit(false);
     present_fence_[presents_ % (kFrames + 1)].store(fence_value_);
     DeliverReports();
-    bool vsync = app::Get().vsync;
-    auto perf_swap = PerfClock::now();
-    swap_->Present(vsync ? 1 : 0, !vsync && tearing_ ? DXGI_PRESENT_ALLOW_TEARING : 0);
-    g_perf.swap += PerfMs(perf_swap);
+    if (show) {
+        bool vsync = app::Get().vsync;
+        auto perf_swap = PerfClock::now();
+        swap_->Present(vsync ? 1 : 0, !vsync && tearing_ ? DXGI_PRESENT_ALLOW_TEARING : 0);
+        g_perf.swap += PerfMs(perf_swap);
+    }
 
     presents_++;
     presents_seen_.store(presents_);
     frame_++;
     ReleaseOldTextures();
     ResetFrame();
-    CountFps();
+    if (show) CountFps();
     if (diag::Perf()) LogPerf();
     ApplySettings();
 }
@@ -3689,6 +3891,14 @@ void D3D12Backend::SetGamma(const uint8_t* ramp) {
 
 }  // namespace
 
-std::unique_ptr<Backend> CreateBackend() { return std::make_unique<D3D12Backend>(); }
+ImTextureID LoadUiImage(const std::filesystem::path& path) {
+    if (!g_ui_backend) {
+        LOGE("d3d12: launcher image requested before the renderer is initialized");
+        return nullptr;
+    }
+    return g_ui_backend->LoadUiImage(path);
+}
+
+std::unique_ptr<Backend> CreateD3D12Backend() { return std::make_unique<D3D12Backend>(); }
 
 }  // namespace gpu
