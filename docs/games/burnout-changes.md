@@ -1,0 +1,100 @@
+# Burnout recomp: changes made to get it running
+
+How the European Xbox Burnout (title ID 0x41430006, XDK 1.0.4361) went from an ISO to a playable native build with video, sound, controller and a setup screen. Paths are relative to this folder. This list is rebuilt from my session notes. Items marked *(from notes)* are summarised from checkpoints rather than re-checked in the code today.
+
+## 1. Setup and toolchain
+
+- Extracted `default.xbe` from the ISO and scaffolded the game project from the SDK template (Xbox-XBERecomp).
+- Installed LLVM 23.1.3 and VS 2022 BuildTools, and used Capstone, Ghidra 12.1.4 and JDK 21 for disassembly work.
+- The SDK ships only XDK 5849 data, but Burnout's 7 libraries are all 4361. Using a 4361 installer you supplied (licensing flagged, local-only):
+  - matched 632 library function names to addresses in `default.xbe`;
+  - derived the 4361 data layout, `sdk\xdk\4361\layout.toml`, from disassembly and relocations. Only anchors verified against the game's code are kept, and a missing key traps when used;
+  - wrote the game's symbol map, `config\game.toml`, from those matches.
+- Matching initially missed the DirectSound members: C++-mangled names were dropped, and COMDAT section symbols at offset 0 cut function bodies short. A second matcher that used only external symbols as boundaries found them.
+- Disc check: a stray loose `assets\default.xbe` (left by my launch script) made the disc check fail. `assets\` now holds only the ISO, and `default.xbe` is staged only for a build and removed afterwards.
+
+## 2. Kernel, disc, save, relaunch
+
+- Mounted the XISO as the game's disc. The disc-authentication IOCTL `0x4D014` is deliberately **not** faked.
+- Save game: mounted the save and utility drives (`MountDefaults`, `XMountUtilityDrive`) *(from notes)*.
+- `XLaunchNewImageA` passes through to the runtime's relaunch.
+- Allocator: `AllocContiguous` allocates top-down, which fixed contiguous-memory exhaustion *(from notes)*.
+- USB: the XDK's host-controller enumeration is stubbed in `src\game\hooks.cpp` (`HCD_EnumHardware`), because the runtime does not emulate the controller at `0xFED00000`.
+
+## 3. Controller
+
+- `XGetDevices` HLE and `XPP_GamepadType = 0x175534` in `config\game.toml`, so the game detects the pad and the controller prompt advances.
+- `kPadMapping` in `sdk\runtime\core\input.cpp`: an SDL mapping for the DirectInput pad you use, which SDL does not know.
+
+## 4. Recompiler
+
+- `sdk\tools\recomp\codegen.cpp`: the flags are saved at `ret` and reloaded after `call`. The C runtime's `sin`, `cos` and `tan` return `arg + 1` through the flags, so without this the camera and car matrices were NaN.
+
+## 5. Direct3D (HLE and renderer)
+
+- Fixed start-up crashes in the default-state and device-state setup (wrong 4361 addresses and layout keys), and replaced the guest push-segment slow path.
+- Fixed P8 (palette) textures drawing as gray blocks, and the blend state and ordering of the splash and video alpha *(from notes)*.
+- Fixed garbled 3D: the HLE render-state table overlapped the vertex stream table. The stream table is now placed correctly, and there are a pusher and control block, a bounded `SetComplex` mirror, and `Walk(Dev(kDevPush))` in the draw calls. `CDevice_KickOff` and `D3DDevice_SetIndices` are no-ops.
+- Transform constants: an `XfLoad` handler for the NV2A pushbuffer methods, plus `UpdateViewportConstants` (viewport constants `c-38` and `c-37`).
+- **4361 render-state numbering** (`sdk\runtime\xdk\d3d8.cpp`, layout key `RenderState_Numbering = 4361`): the game numbers render states differently from the 5849 table the renderer assumes. The guest-to-host maps are:
+  - deferred block: guest 82 ↔ host 92;
+  - material sources: guest 96–99 ↔ host 110–113;
+  - ambient: guest 105 ↔ host 115;
+  - points: guest 106–113 ↔ host 116–123;
+  - complex block: starts at guest 117 ↔ host 136.
+  `TwoSidedLighting` no longer enables the back-colour path. This fixed the black road and buildings, and colours are correct.
+- Cube-face tiles are copied by quads into cube surfaces, and `BindCubeTargets` in `sdk\runtime\gpu\d3d12.cpp` binds them for sampling.
+- **Reflections:** the game sets its pixel shaders through `D3DDevice_SetPixelShaderProgram`, which builds `{1, 0, definition}` and jumps into `SetPixelShader`. The runtime could not read that handle record because `PixelShader_Definition` (`0x8`) was missing in `sdk\xdk\4361\layout.toml`. Adding it makes the car draws use the combiner shaders that sample the cube map and the fresnel ramp.
+
+## 6. Sound (DirectSound)
+
+- The runtime already has a host mixer (`sdk\runtime\xdk\dsound.cpp`, `sdk\runtime\audio\xaudio2.cpp`). It only activates for addresses listed in `config\game.toml`, and nearly all of the DirectSound ones were unset.
+- Mapped the 4361 addresses: the `IDirectSoundBuffer`, `IDirectSound` and `CDirectSoundStream` wrappers, the stream vtables, `DirectSoundCreateStream`, `CreateSoundBuffer` and others. Added `SetEG` and `SetMode`, and the new layout keys (`CDirectSoundStream_Vtable`, `Vtable2`, `EffectsImage_*`).
+- `DirectSoundCreate` calls the guest's `DSound_GetObject` (`0x159861`), because a fabricated host object crashed the constructor chain.
+- The APU and DSP MMIO has no host device behind it, so the DSP busy-waits and submit spins are replaced (`DspAckLoop`) and the handshakes cleared.
+- The library's own start-up code calls the same wrappers that are HLE'd, with buffers it made itself. `BUFFER` methods therefore fall back to the original recompiled body for non-host buffers (`GUEST_ORIG`). Without this `DirectSoundCreate` failed and the game later called with a null `this`.
+- Music and effects now play.
+
+## 7. Host features added this week
+
+- **Esc quits** (`sdk\runtime\app\main.cpp`), unless the F8 panel or quit dialog is open, which Esc closes instead (`src\common\game_info.cpp`).
+- **Controller:** F9 opens the controller setup screen, ported from the Baldur's Gate recomp (`src\common\pad_mapping.cpp`). It lists the connected pads, runs a map-every-button wizard, tests live and restores the default. Mappings are kept per pad in `controller_mapping.txt` beside the exe and re-applied at window start. `padmap::Prepare` (the `init` hook) turns SDL's XInput on with override priority, because the SDK turns it off and Xbox pads then showed up as unmapped DirectInput devices. `CMakeLists.txt` gives `pad_mapping.cpp` SDL's include path. The earlier launcher and its start screen stay removed; display options are in F8.
+- **FPS overlay:** F2 toggles it (`src\common\overlay.cpp`). It is saved as `show_fps`.
+- **F12, or Start + Back held 1.5 s on a pad:** a quit confirmation (`src\common\overlay.cpp`). Esc still quits at once with nothing open.
+- **F8 graphics panel** (`src\common\graphics.cpp`): window mode, resolution, render scale, vsync, frame rate, anisotropic filtering, FXAA, an "Original rendering" switch that keeps the other choices and restores them, and Defaults. Saved in `settings.toml` (`game_fps`, `anti_aliasing`, `original_rendering`, `kept_*`).
+- **FXAA** (`src\common\enhance.cpp`): a `gpu::Extension::Present` pass on the finished picture. Off by default.
+- **Frame rate** (30, 60, 120; default 60):
+  - the game steps once per Swap with a fixed dt, a float at `0x664C8C` (1/60 s, or 1/50 s when `sub_00074176` finds the PAL flag at `0x8A7834`) and whole milliseconds at `0x664C88`. `graphics::ApplyGameFps` rewrites those two, and only when they hold the game's own or our earlier value. The `.rdata` constants 1/60 and 1/50 are shared with other code, so they are not touched;
+  - `app::g_step_rate` makes `Pace()` hold to the step rate, and `app::g_show_every` makes `D3DDevice_Swap` present one step in N (30 steps at 60 and shows every second one);
+  - 120 is experimental: anything that counts whole frames runs faster.
+- Memory experiment: a 16 MB upload ring cut memory from about 343 MB to 195 MB but stuttered, so it was reverted to 64 MB. See `TODO.md`.
+
+## 7b. SDK update
+
+- The SDK was fast-forwarded from `65e959d` to upstream `f7b13fd` (129 commits). The uncommitted Burnout changes were stashed and re-applied, with conflicts resolved in `memory.cpp`, `input.cpp`, `d3d12.cpp`, `dsound.cpp` and `d3d8.cpp`. A backup of the previous patch is outside the repo, and `stash@{0}` in `sdk` is still held as a safety net.
+- `config\game.toml` `[xbe]` now needs `library = "Game.dll"`.
+- Merge fixes: a duplicate `BUFFER(SetEG, 2)` in `dsound.cpp`, the `Walk` function header in `d3d8.cpp`, and a `<cstdio>` include removed from `x86_ops.h` (the freestanding `Game_code` build has no such header).
+- Hooks added to the SDK for the frame-rate and FXAA work (the same ones `bgda-recomp` carries in `patches\sdk.patch`): `gpu::Extension::Present`, `Backend::Present(front, show)` so a step can go unshown, and `app::g_step_rate` and `g_show_every`.
+- Not ported: Dark Alliance's SSAO and soft shadows. They rest on that game's depth projection and shadow map, which have not been measured for Burnout.
+
+## 8. Dead ends worth remembering
+
+- Treating 5849 layout values as valid for 4361 was wrong; only verified 4361 offsets are used.
+- Broad XBE sweeps were invalid until Capstone was run with `skipdata=True`.
+- Fabricating DirectSound parent objects, or skipping the guest factory, crashed the constructor.
+- Many camera NaN, tiled-viewport and cube-atlas probes were temporary diagnostics. All probes are removed.
+
+## 9. Files touched
+
+| Area | Files |
+|---|---|
+| Config and layout | `config\game.toml`, `sdk\xdk\4361\layout.toml`, `sdk\xdk\4361\*` |
+| Recompiler | `sdk\tools\recomp\codegen.cpp` |
+| D3D8 and renderer | `sdk\runtime\xdk\d3d8.cpp`, `sdk\runtime\xdk\layout.h`, `sdk\runtime\gpu\d3d12.cpp` |
+| Sound | `sdk\runtime\xdk\dsound.cpp` |
+| Input and app | `sdk\runtime\core\input.cpp`, `input.h`, `sdk\runtime\app\main.cpp`, `app.h` |
+| Game hooks and UI | `src\game\hooks.cpp`, `src\common\game_info.cpp`, `overlay.cpp`, `graphics.cpp`, `enhance.cpp` (and their headers) |
+
+## Licensing
+
+`config\game.toml` symbols and `sdk\xdk\4361\*` derive from the leaked XDK 4361 installer. Settle the licensing before committing or sharing anything. Nothing is committed yet.
