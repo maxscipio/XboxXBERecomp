@@ -663,7 +663,11 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
         }
     }
     Walk(Dev(kDevPush));  // reports asked for at the end of the frame
-    if (g_backend) g_backend->Present(SurfaceOf(g_buffers[1]));
+    // a title shown at fewer frames than it steps (g_show_every > 1) shows one swap in that many
+    static uint32_t s_swaps = 0;
+    uint32_t every = app::g_show_every;
+    bool show = every <= 1 || s_swaps++ % every == 0;
+    if (g_backend) g_backend->Present(SurfaceOf(g_buffers[1]), show);
     app::Pace(g_interval);
     // like the XDK, the surfaces stay put and their memory rotates: titles keep back buffer pointers and copy its data
     uint32_t last = g_buffers[g_buffer_count - 1], data = R32(last + 4), lk = R32(last + 8);

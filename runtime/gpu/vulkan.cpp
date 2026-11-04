@@ -946,7 +946,7 @@ public:
                uint32_t stencil) override;
     void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) override;
     void Copy(const Surface& src, const Surface& dst, uint32_t count, uint32_t src_rects, uint32_t dst_points) override;
-    void Present(const Surface& front) override;
+    void Present(const Surface& front, bool show) override;
     void WaitGpuFrame(uint64_t n) override;
     void Sync(uint32_t data, uint32_t size) override;
     void SyncLate(uint32_t data) override { Sync(data, 0); }
@@ -2998,8 +2998,7 @@ void VulkanBackend::DrawFrame(Tgt* t, uint32_t image) {
     Transition(bb, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 }
 
-void VulkanBackend::Present(const Surface& front) {
-    const bool show = true;
+void VulkanBackend::Present(const Surface& front, bool show) {
     ResizeSwap();
     Tgt* t = EnsureTarget(front, false);
     if (t && LatchCpuWrite(*t)) UploadTarget(*t, front);

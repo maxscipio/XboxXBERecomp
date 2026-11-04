@@ -465,7 +465,7 @@ public:
                uint32_t stencil) override;
     void Draw(const State& s, uint32_t prim, uint32_t start, uint32_t count, const uint8_t* indices) override;
     void Copy(const Surface& src, const Surface& dst, uint32_t count, uint32_t src_rects, uint32_t dst_points) override;
-    void Present(const Surface& front) override;
+    void Present(const Surface& front, bool show) override;
     void WaitGpuFrame(uint64_t n) override;
     void Sync(uint32_t data, uint32_t size) override;
     void SyncLate(uint32_t data) override;
@@ -3511,7 +3511,7 @@ void LogPerf() {
     }
 }
 
-void D3D12Backend::Present(const Surface& front) {
+void D3D12Backend::Present(const Surface& front, bool show) {
     PerfScope perf_present{g_perf.present};
     if (cap_) {
         FinishCapture(front);
@@ -3525,22 +3525,23 @@ void D3D12Backend::Present(const Surface& front) {
     if (ramp_dirty_) UploadGammaRamp();
     Transition(lut_.Get(), lut_state_, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
-    uint32_t bi = swap_->GetCurrentBackBufferIndex();
-    DrawFrame(t, bi);
+    if (show) DrawFrame(t, swap_->GetCurrentBackBufferIndex());
     Submit(false);
     present_fence_[presents_ % (kFrames + 1)].store(fence_value_);
     DeliverReports();
-    bool vsync = app::Get().vsync;
-    auto perf_swap = PerfClock::now();
-    swap_->Present(vsync ? 1 : 0, !vsync && tearing_ ? DXGI_PRESENT_ALLOW_TEARING : 0);
-    g_perf.swap += PerfMs(perf_swap);
+    if (show) {
+        bool vsync = app::Get().vsync;
+        auto perf_swap = PerfClock::now();
+        swap_->Present(vsync ? 1 : 0, !vsync && tearing_ ? DXGI_PRESENT_ALLOW_TEARING : 0);
+        g_perf.swap += PerfMs(perf_swap);
+    }
 
     presents_++;
     presents_seen_.store(presents_);
     frame_++;
     ReleaseOldTextures();
     ResetFrame();
-    CountFps();
+    if (show) CountFps();
     if (diag::Perf()) LogPerf();
     ApplySettings();
 }
