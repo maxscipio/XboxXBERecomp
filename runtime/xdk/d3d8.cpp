@@ -1512,6 +1512,10 @@ bool ApplyConstant(uint32_t m, uint32_t v) {
     }
     if (m < kConstantData || m >= kConstantDataEnd) return false;
     if (g_constant_register < kConstantRegisters) {
+        if (g_constant_register == 158) { // TMP
+            static int n = 0;
+            if (n++ < 80) LOGR("TMP apply c158[%u] = %08X (%g)", g_constant_component, v, *reinterpret_cast<float*>(&v));
+        }
         std::memcpy(&g_state.vsc[g_constant_register][g_constant_component], &v, 4);
     }
     if (++g_constant_component == 4) {
@@ -1616,7 +1620,7 @@ static void RunCommands(uint32_t begin, uint32_t end) {
                 vertices.clear();
                 ApplyImmediate(m, v);
             } else if ((m >= kArrayOffsets && m < kArrayFormatsEnd) || (m >= kArrayDraws && m < kInlineArray)) {
-                LOG_FIRST(16, "d3d: pushed commands draw from vertex arrays (method %04X), which is not run", m);
+                { static int nv = 0; if (nv++ < 20) LOGR("TMP pushed commands draw from vertex arrays (method %04X)", m); }
             } else if (!ApplyConstant(m, v) && !ApplyImmediate(m, v) && m >> 2 < g_state.simple.size()) {
                 SetSimple(m, v);
             }

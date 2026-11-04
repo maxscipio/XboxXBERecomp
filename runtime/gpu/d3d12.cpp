@@ -2676,6 +2676,25 @@ void D3D12Backend::EndDrawCapture(const State& s, const Assembled& a, uint32_t c
             const auto& v = s.vsc[size_t(r)];
             fprintf(cap_, "\n     hw%d %.9g %.9g %.9g %.9g", r, v[0], v[1], v[2], v[3]);
         }
+        { // TMP
+            uint32_t n = 0;
+            for (int r = 0; r < 16; r++) n += (a.regs >> r) & 1;
+            fprintf(cap_, "\n     TMPregs %04X n %u vc %u", a.regs, n, a.vertex_count);
+            for (int r = 0; r < 16; r++) {
+                if (!((a.regs >> r) & 1)) continue;
+                const auto& e = a.elements[size_t(r)];
+                const auto& b = a.buffers[e.buffer];
+                fprintf(cap_, "\n     TMPe v%d fmt %u buf %u off %u stride %u dec %llX raw:", r, e.format, e.buffer, e.offset, b.stride,
+                        (unsigned long long)(a.decode >> (4 * r) & 15));
+                if (b.src && b.bytes >= e.offset + 16)
+                    for (int q = 0; q < 16; q++) fprintf(cap_, " %02X", b.src[e.offset + q]);
+            }
+            for (size_t v = 0; v < std::min<size_t>(3, n ? a.vertices.size() / (n * 4) : 0); v++) {
+                fprintf(cap_, "\n     TMPv [");
+                for (uint32_t k = 0; k < n * 4; k++) fprintf(cap_, " %g", a.vertices[v * n * 4 + k]);
+                fprintf(cap_, " ]");
+            }
+        }
     }
     fputc('\n', cap_);
 }
