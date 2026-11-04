@@ -617,6 +617,26 @@ HLE_STDCALL(D3DDevice_GetDepthStencilSurface2, 0) {
 
 namespace {
 std::atomic<uint32_t> g_presents{0};
+
+// D3DSWAPDATA {Swap, SwapVBlank, MissedVBlanks, TimeUntilSwapVBlank, TimeBetweenSwapVBlanks} for the title's swap
+// callback. A time-step engine reads SwapVBlank to learn how many blanks a frame took; without the call its step
+// stays at its floor and the game runs slow whenever it is not showing a frame every blank.
+void CallSwapCallback(X86Context& ctx, uint32_t swaps) {
+    if (XDK_CDevice_SwapCallback == xdk::kUnknown || XDK_CDevice_VBlankCount == xdk::kUnknown) return;
+    uint32_t callback = Dev(XDK_CDevice_SwapCallback);
+    if (!callback) return;
+    static uint32_t data = mem::AllocSystem(20);
+    static uint32_t last = 0;
+    uint32_t blank = Dev(XDK_CDevice_VBlankCount);
+    uint32_t missed = last && blank > last + 1 ? blank - last - 1 : 0;
+    last = blank;
+    W32(data, swaps);
+    W32(data + 4, blank);
+    W32(data + 8, missed);
+    W32(data + 12, 0);
+    W32(data + 16, 0);
+    CallGuest(ctx, callback, {data});
+}
 }  // namespace
 
 HLE_STDCALL(D3DDevice_Swap, 1) {
@@ -656,6 +676,7 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
     g_state.rt = SurfaceOf(Dev(kDevRenderTarget));
     uint32_t n = Dev(kDevSwapCount) + 1;
     SetDev(kDevSwapCount, n);
+    CallSwapCallback(ctx, n);
     return n;
 }
 
