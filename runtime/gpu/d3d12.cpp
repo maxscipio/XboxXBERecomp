@@ -1344,7 +1344,8 @@ void D3D12Backend::UpdateTargetUsed(uint32_t data) {
 bool D3D12Backend::BindTargets(const State& s) {
     Target* rt = EnsureTarget(s.rt, false);
     Target* ds = s.rs[kRsZEnable] || s.rs[kRsStencilEnable] ? EnsureTarget(s.zs, true) : nullptr;
-    if (rt && ds && (rt->w != ds->w || rt->h != ds->h)) ds = nullptr;
+    // a depth buffer larger than the colour target is fine, it covers the target's top left corner
+    if (rt && ds && (rt->w > ds->w || rt->h > ds->h)) ds = nullptr;
     if (!rt && !ds) return false;
     if (rt) {
         if (LatchCpuWrite(*rt)) UploadTarget(*rt, s.rt);
