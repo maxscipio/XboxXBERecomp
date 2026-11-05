@@ -275,7 +275,12 @@ void Pace(uint32_t interval) {
     using clock = std::chrono::steady_clock;
     static clock::time_point next = clock::now();
     uint32_t cap = g_step_rate ? g_step_rate.load() : Get().fps_cap;
-    if (cap == kFpsCapRefresh) cap = RefreshRate();
+    if (cap == kFpsCapRefresh) {
+        // a few frames under the refresh rate keeps a variable-refresh display inside its range
+        constexpr uint32_t kRefreshMargin = 3;
+        cap = RefreshRate();
+        if (cap > 2 * kRefreshMargin) cap -= kRefreshMargin;
+    }
     // the cap is the user's: 0 leaves the frame rate unlimited, otherwise the console's rate holds it back
     if (cap) {
         uint32_t console = g_engine_fps ? g_engine_fps.load() : 60 / std::clamp<uint32_t>(interval, 1, 4);
