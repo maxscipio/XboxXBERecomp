@@ -950,7 +950,7 @@ public:
     void Present(const Surface& front, bool show) override;
     void WaitGpuFrame(uint64_t n) override;
     void Sync(uint32_t data, uint32_t size) override;
-    void SyncLate(uint32_t data) override { Sync(data, 0); }
+    void SyncLate(uint32_t data, uint32_t size) override { Sync(data, size); }
     void Flush() override { Submit(true); }
     void SetGamma(const uint8_t* ramp) override {
         std::memcpy(ramp_, ramp, sizeof(ramp_));
