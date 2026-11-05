@@ -3952,7 +3952,10 @@ void D3D12Backend::CapWindow(const Surface& front) {
     cl_->ClearRenderTargetView(rh, black, 0, nullptr);
     cl_->OMSetRenderTargets(1, &rh, FALSE, nullptr);
     bound_rt_ = bound_ds_ = nullptr;
-    BlitFrame(*t);
+    ID3D12Resource* shown = nullptr;
+    DXGI_FORMAT shown_fmt = t->fmt;
+    if (ext_) shown = ext_->Present(*this, *t, shown_fmt);
+    BlitFrame(*t, shown, shown_fmt);
     DrawOverlay(*t);
     D3D12_RESOURCE_STATES st = D3D12_RESOURCE_STATE_RENDER_TARGET;
     CapSave({.res = img.Get(), .state = &st, .fmt = kBgra, .w = bb_w_, .h = bb_h_}, "window");
@@ -4039,7 +4042,7 @@ void D3D12Backend::DrawFrame(Target* t, uint32_t bi) {
     cl_->OMSetRenderTargets(1, &rh, FALSE, nullptr);
     bound_rt_ = bound_ds_ = nullptr;
     if (t) BlitFrame(*t, shown, shown_fmt);
-        if (t) DrawOverlay(*t);
+    if (t) DrawOverlay(*t);
     RenderUi();
     Transition(bb_[bi].Get(), bs, D3D12_RESOURCE_STATE_PRESENT);
 }
