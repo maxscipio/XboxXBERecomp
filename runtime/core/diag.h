@@ -24,4 +24,13 @@ inline const std::filesystem::path& CaptureDir() {
     return dir;
 }
 
+// XBE_CAPTURE_EVERY: with XBE_CAPTURE_DIR, captures a frame every this many seconds without F3, 0 or unset: never
+inline double CaptureEvery() {
+    static const double seconds = [] {
+        const char* v = std::getenv("XBE_CAPTURE_EVERY");
+        return v ? std::strtod(v, nullptr) : 0.0;
+    }();
+    return seconds;
+}
+
 }  // namespace diag
