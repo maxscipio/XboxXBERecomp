@@ -1441,7 +1441,11 @@ STREAM(GetInfo, 2) {
     return 0;
 }
 STREAM(GetStatus, 2) {
-    W32(a[1], v.packets.size() < v.max_packets ? 1u : 0u);  // XMEDIASTATUS_ACCEPT_INPUT
+    // DSSTREAMSTATUS_READY (takes a packet), _PLAYING from the first packet until flushed or played out, _PAUSED
+    uint32_t st = v.packets.size() < v.max_packets ? 0x1u : 0u;
+    if (v.active) st |= 0x10000u;
+    if (v.paused) st |= 0x20000u;
+    W32(a[1], st);
     return 0;
 }
 STREAM(Process, 3) {

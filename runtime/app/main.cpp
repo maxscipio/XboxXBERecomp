@@ -306,6 +306,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     SetUnhandledExceptionFilter(app::WriteCrashDump);
     std::signal(SIGABRT, [](int) { app::WriteCrashDump(nullptr); });
     timeBeginPeriod(1);
+    // debugging aid: the console has one CPU, titles lean on it for ordering between threads
+    if (const char* one = std::getenv("XBE_ONE_CORE"); one && *one == '1') {
+        DWORD_PTR proc = 0, sys = 0;
+        if (GetProcessAffinityMask(GetCurrentProcess(), &proc, &sys) && proc)
+            SetProcessAffinityMask(GetCurrentProcess(), proc & (~proc + 1));
+    }
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     // one log a session: a relaunch into another image carries on its predecessor's
     bool relaunched = std::wcsstr(GetCommandLineW(), L"--relaunched") != nullptr;

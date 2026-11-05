@@ -15,6 +15,7 @@ CDevice_ZScale            = 0x450   # D3DDevice_SetViewport 0x12A2C0 helper 0x12
 CDevice_SuperSampleX      = 0x458   # viewport helper 0x127BA0 scales Width by [0x458]
 CDevice_SuperSampleY      = 0x45C   # viewport helper 0x127BA0 scales Height by [0x45C]
 CDevice_BaseVertex        = 0x1C    # d3d8.lib SetIndices stores BaseVertexIndex at [0x1C]; DrawIndexedVertices 0x12B470 reads it and passes it to 0x12F8C0
+CDevice_IndexBuffer       = 0x38C   # Gun Metal SetIndices 0x14D800 stores the index buffer at [0x38C] and its data pointer at D3D_IndexData
 CDevice_Textures          = 0xA78   # D3DDevice_SetTexture 0x12A6F0 stores [stage] at dword 0x29E
 CDevice_Palettes          = 0xA88   # D3DDevice_SetPalette 0x12A870 stores palette at [0xA88 + stage * 4]
 CDevice_RenderTarget      = 0x2070  # D3DDevice_GetRenderTarget 0x12A270 returns it

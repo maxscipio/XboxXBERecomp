@@ -186,10 +186,11 @@ bool CodeGen::EmitX87(uint32_t va, const ZydisDecodedInstruction& in, const Zydi
             return true;
         case ZYDIS_MNEMONIC_FRNDINT: emit("X87_ST(0) = x87_round(ctx, X87_ST(0));"); return true;
         case ZYDIS_MNEMONIC_FPREM:
-            emit("X87_ST(0) = std::fmod(X87_ST(0), X87_ST(1)); ctx.fsw &= ~0x400;");
+            // a finished reduction clears C2 and reports the low quotient bits in C1, C3, C0
+            emit("{ double a = X87_ST(0), b = X87_ST(1); uint32_t q = 0; if (a - a == 0.0 && b - b == 0.0 && b != 0.0) q = (uint32_t)(int64_t)std::fmod(std::fabs(std::trunc(a / b)), 8.0); X87_ST(0) = std::fmod(a, b); ctx.fsw = (ctx.fsw & ~0x4700) | ((q & 1) << 9) | ((q & 2) << 13) | ((q & 4) << 6); }");
             return true;
         case ZYDIS_MNEMONIC_FPREM1:
-            emit("X87_ST(0) = std::remainder(X87_ST(0), X87_ST(1)); ctx.fsw &= ~0x400;");
+            emit("{ double a = X87_ST(0), b = X87_ST(1); uint32_t q = 0; if (a - a == 0.0 && b - b == 0.0 && b != 0.0) q = (uint32_t)(int64_t)std::fmod(std::fabs(std::nearbyint(a / b)), 8.0) & 7; X87_ST(0) = std::remainder(a, b); ctx.fsw = (ctx.fsw & ~0x4700) | ((q & 1) << 9) | ((q & 2) << 13) | ((q & 4) << 6); }");
             return true;
         case ZYDIS_MNEMONIC_FXTRACT:
             emit("int e; double v = X87_ST(0); double mnt = std::frexp(v, &e); X87_ST(0) = (double)(e - 1); x87_push(ctx, mnt * 2.0);");
