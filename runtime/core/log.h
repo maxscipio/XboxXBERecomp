@@ -15,6 +15,10 @@ void Write(Level lv, const char* fmt, ...) __attribute__((format(printf, 2, 3)))
 void Flush();
 const std::string& Path();
 
+// every level is written (what XBE_LOG sets at start); the game's F2 key switches it on and off while it runs
+bool All();
+void SetAll(bool on);
+
 // called with the text of every line before the level is checked, so a release build without XBE_VERBOSE shows an
 // observer the lines it does not write; from any thread, and it must not log or wait on a lock a logging thread holds.
 // nullptr removes it.

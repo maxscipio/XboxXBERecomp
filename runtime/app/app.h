@@ -123,4 +123,7 @@ void SetEngineFps(uint32_t fps);
 inline std::atomic<uint32_t> g_step_rate{0};
 inline std::atomic<uint32_t> g_show_every{1};
 
+// Blanks per second that D3DDevice_BlockUntilVerticalBlank waits on: the console's 60, or the title's own rate.
+inline std::atomic<uint32_t> g_vblank_rate{60};
+
 }  // namespace app

@@ -879,6 +879,7 @@ private:
     FILE* cap_ = nullptr;
     std::filesystem::path cap_dir_;
     uint32_t cap_i_ = 0;
+    uint32_t cap_empty_ = 0;
     uint32_t cap_rt_ = 0;
     std::unordered_set<uint32_t> cap_seen_;
     std::unordered_set<uint64_t> cap_sh_;
@@ -2991,6 +2992,22 @@ void D3D12Backend::CaptureInputs(const State& s, const Assembled& a, const DrawC
             fprintf(cap_, "\n     c%d %.9g %.9g %.9g %.9g", r - kVsConstantBias, v[0], v[1], v[2], v[3]);
         }
     }
+    if (!(s.vs_handle & 0xFFFF0000u)) {
+        // fixed function: the material, and the first vertices through the draw's matrices (c.wvp and c.wv hold the
+        // transposed matrices, so row j of the product is dot(ip, c.m[j*4..j*4+3]))
+        fprintf(cap_, "\n     ffp amb %g %g %g %g mat d (%g %g %g %g) a (%g %g %g %g) e (%g %g %g %g)", c.amb[0], c.amb[1], c.amb[2],
+                c.amb[3], c.mat[0][0], c.mat[0][1], c.mat[0][2], c.mat[0][3], c.mat[1][0], c.mat[1][1], c.mat[1][2], c.mat[1][3],
+                c.mat[3][0], c.mat[3][1], c.mat[3][2], c.mat[3][3]);
+        for (size_t v = 0; v < std::min<size_t>(4, n ? a.vertices.size() / (n * 4) : 0); v++) {
+            const float* p = &a.vertices[v * n * 4];
+            float cp[4], vp[3];
+            for (int j = 0; j < 4; j++)
+                cp[j] = p[0] * c.wvp[j * 4] + p[1] * c.wvp[j * 4 + 1] + p[2] * c.wvp[j * 4 + 2] + c.wvp[j * 4 + 3];
+            for (int j = 0; j < 3; j++) vp[j] = p[0] * c.wv[j * 4] + p[1] * c.wv[j * 4 + 1] + p[2] * c.wv[j * 4 + 2] + c.wv[j * 4 + 3];
+            fprintf(cap_, "\n     ffp v%zu clip %g %g %g %g ndc %g %g %g view %g %g %g", v, cp[0], cp[1], cp[2], cp[3], cp[0] / cp[3],
+                    cp[1] / cp[3], cp[2] / cp[3], vp[0], vp[1], vp[2]);
+        }
+    }
     fprintf(cap_, "\n     zp %.9g %.9g %.9g %.9g surf %g %g %g %g", c.zparams[0], c.zparams[1], c.zparams[2], c.zparams[3], c.surf[0],
             c.surf[1], c.surf[2], c.surf[3]);
     fprintf(cap_, "\n     pc");
@@ -4127,7 +4144,10 @@ void LogPerf() {
 
 void D3D12Backend::Present(const Surface& front, bool show) {
     PerfScope perf_present{g_perf.present};
-    if (cap_) {
+    if (cap_ && cap_i_ == 0 && ++cap_empty_ < 8) {
+        // a title that presents twice per game frame repeats the last picture with no draws; wait for a real frame
+    } else if (cap_) {
+        cap_empty_ = 0;
         FinishCapture(front);
     } else if ((g_capture.exchange(false) || AutoCaptureDue()) && CaptureOn()) {
         StartCapture();

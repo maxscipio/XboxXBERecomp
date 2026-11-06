@@ -23,6 +23,7 @@
 
 #include "app/app.h"
 #include "core/input.h"
+#include "core/diag.h"
 #include "core/log.h"
 #include "gpu/backend.h"
 #include "image_symbols.h"
@@ -172,6 +173,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_KEYDOWN:
             if (wp == VK_F3) DumpThreads();
+            if (wp == VK_F2 && !(lp & (1 << 30))) {
+                // info logging and the perf lines, on for the part of a run that is looked at
+                bool on = !logx::All();
+                if (on) LOGR("log: F2, info and perf lines on");
+                logx::SetAll(on);
+                diag::PerfFlag() = on;
+                if (!on) LOGR("log: F2, info and perf lines off");
+            }
             if (wp == VK_ESCAPE) PostMessageW(hwnd, WM_CLOSE, 0, 0);
             return 0;
         case WM_ACTIVATE:

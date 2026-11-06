@@ -92,7 +92,7 @@ bool InCode(uint32_t va);  // cpu/dispatch.cpp
 #define HAS_D3DDevice_SetBackBufferScale 0
 #endif
 #ifndef SYM_D3DDevice_DrawIndexedVerticesUP
-#define SYM_D3DDevice_DrawIndexedVerticesUP FFFFFE0B
+#define SYM_D3DDevice_DrawIndexedVerticesUP FFFFFE0D
 #define HAS_D3DDevice_DrawIndexedVerticesUP 0
 #endif
 
@@ -603,8 +603,14 @@ HLE_STDCALL(D3D_MakeRequestedSpace, 2) {
     return ScratchPush();
 }
 
+// Returns at the next blank of a frame clock of app::g_vblank_rate (60 Hz by default, the same clock GetRasterStatus
+// uses). A fixed 16 ms sleep on top of the frame's work made a title that blocks once per frame run at about 51 fps.
 HLE_STDCALL(D3DDevice_BlockUntilVerticalBlank, 0) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    LOG_FIRST(8, "d3d: BlockUntilVerticalBlank from %08X", R32(ctx.esp));
+    int64_t frame = 1000000 / std::clamp<uint32_t>(app::g_vblank_rate, 1, 1000);
+    auto now = std::chrono::steady_clock::now();
+    int64_t us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+    std::this_thread::sleep_until(now + std::chrono::microseconds(frame - us % frame));
     return 0;
 }
 // (status): D3DRASTER_STATUS {InVBlank, ScanLine} on a 60 Hz frame clock. The library reads the GPU's scanline,

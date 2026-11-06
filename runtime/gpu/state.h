@@ -183,7 +183,8 @@ struct State {
     std::array<uint32_t, 4 * 8> scissors{};
     // fixed function
     std::array<std::array<float, 16>, 512> transforms{};  // by D3DTRANSFORMSTATETYPE
-    std::array<float, 17> material{};
+    // diffuse, ambient, specular, emissive, power; white diffuse and ambient until the title sets a material (Heroes never does)
+    std::array<float, 17> material{1, 1, 1, 1, 1, 1, 1, 1};
     std::array<std::array<uint32_t, 26>, 8> lights{};  // D3DLIGHT8
     uint32_t light_enable = 0;                         // bit per light
     float ss_offset_x = 0, ss_offset_y = 0;

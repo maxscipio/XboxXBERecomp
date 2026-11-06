@@ -65,8 +65,15 @@ const std::string& Path() { return g_path; }
 
 void SetObserver(void (*observer)(const char* message)) { g_observer = observer; }
 
+namespace {
+std::atomic<bool> g_all{std::getenv("XBE_LOG") != nullptr || Verbose()};  // release build: every level, flushed per line
+}  // namespace
+
+bool All() { return g_all.load(); }
+void SetAll(bool on) { g_all.store(on); }
+
 void Write(Level lv, const char* fmt, ...) {
-    static const bool all = std::getenv("XBE_LOG") != nullptr || Verbose();  // release build: every level, flushed per line
+    const bool all = g_all.load();
     auto observer = g_observer.load();
     if (!observer && !kVerbose && !all && lv < Level::Warn) return;
     char msg[4096];

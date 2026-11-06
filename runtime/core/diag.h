@@ -1,15 +1,17 @@
 #pragma once
+#include <atomic>
 #include <cstdlib>
 #include <filesystem>
 
 // diagnostics switched on by environment variables, read once
 namespace diag {
 
-// XBE_PERF set: perf log lines once a second and the read-backs named
-inline bool Perf() {
-    static const bool on = std::getenv("XBE_PERF") != nullptr;
+// XBE_PERF set: perf log lines once a second and the read-backs named; the game's F2 key switches it with the log
+inline std::atomic<bool>& PerfFlag() {
+    static std::atomic<bool> on{std::getenv("XBE_PERF") != nullptr};
     return on;
 }
+inline bool Perf() { return PerfFlag().load(std::memory_order_relaxed); }
 
 // XBE_TRACE_KERNEL set: kernel calls are logged with their first arguments, return value and return address, up to
 // the number it holds per export (200 when it is not a number), so a stall shows the call that never returned
