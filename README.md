@@ -6,6 +6,7 @@ This tool was originally created for porting [Tom Clancy's Splinter Cell: Double
 - [BLACK](https://github.com/TGP482/BLACK-XBERecomp)
 - [007: From Russia With Love](https://github.com/TGP482/007FRWL-XBERecomp)
 - [007: Nightfire](https://github.com/TGP482/007Nightfire-XBERecomp)
+- [Red Dead Revolver](https://github.com/TGP482/RDR-XBERecomp)
 
 > [!NOTE]
 > This project does not include any game assets. You must provide the files from your own legally acquired copy of the game to install or build.
@@ -66,6 +67,7 @@ A new XDK build needs `xdk/<build>/layout.toml` and signatures made from titles 
 
 ### Audio
 - **DirectSound** - Mixes sound in software through XAudio2, with Xbox ADPCM, streams, mix bins and the effects image.
+- **Audio Output** - Plays in 5.1 surround, stereo or mono.
 
 ### Input
 - **Controller** - Supports Xbox, PlayStation and Switch controllers through SDL3, with hot plugging and rumble.
@@ -80,8 +82,6 @@ A new XDK build needs `xdk/<build>/layout.toml` and signatures made from titles 
 - **Boot Splash** - Place a `splash.png` (or `.bmp`) beside the exe to display a splash screen at launch.
 - **Diagnostics** - Logs frame timing with `XBE_PERF`, captures a frame with F3 when `XBE_CAPTURE_DIR` is set and enables the Direct3D 12 debug layer with `XBE_D3D12_DEBUG`.
 - **Scripted Controller** - `XBE_INPUT_SCRIPT` presses buttons and moves the left or right stick on a controller in port 1 at set times for unattended runs, and can hold its clock until the game logs a given line (a file open, say), so a script follows loading times. The syntax is in the comment above `LoadScript` in `runtime/core/input.cpp`.
-- **Headless Harness** - Builds and runs a game on Linux without a window, GPU, audio or controller, for testing.
-- **SDK Sync** - Keeps the `sdk/` copies in game repositories in step with this repository.
 
 ## Credits
 

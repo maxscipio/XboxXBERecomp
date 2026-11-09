@@ -174,11 +174,7 @@ bool WildMatch(const std::string& pat, const std::string& s) {
 
 // past 2 GB a long offset wraps on Windows
 void Seek(FILE* fp, uint64_t pos) {
-#ifdef _WIN32
     _fseeki64(fp, int64_t(pos), SEEK_SET);
-#else
-    fseeko(fp, off_t(pos), SEEK_SET);
-#endif
 }
 
 void IoStatus(uint32_t iosb, uint32_t status, uint32_t info) {
@@ -350,6 +346,11 @@ Target Resolve(const std::string& xbox_path, uint32_t root_handle) {
     return {MatchCase(best->second, parts).string()};
 }
 
+// a bare name with no device is missing in \??, any longer path misses a folder first
+uint32_t Unmapped(const std::string& name) {
+    return Normalize(name).find('\\') == std::string::npos ? kObjectNameNotFound : kObjectPathNotFound;
+}
+
 // the disc image is read only: nothing on it is created, replaced or written
 uint32_t OpenOnDiscImpl(const Disc::Entry* e, const std::string& name, uint32_t handle_out, uint32_t iosb, uint32_t disposition,
                         uint32_t options) {
@@ -424,9 +425,10 @@ KERNEL_EXPORT(190, NtCreateFile, 9) {
     if (t.disc) return OpenOnDisc(t.entry, name, handle_out, iosb, disposition, options);
     const std::string& host = t.host;
     if (host.empty()) {
-        LOGE("NtCreateFile: no mapping for %s", name.c_str());
-        IoStatus(iosb, kObjectPathNotFound, 0);
-        return kObjectPathNotFound;
+        LOGW("NtCreateFile: no mapping for %s", name.c_str());
+        uint32_t status = Unmapped(name);
+        IoStatus(iosb, status, 0);
+        return status;
     }
     std::error_code ec;
     bool exists = fs::exists(host, ec);
@@ -541,7 +543,7 @@ KERNEL_EXPORT(202, NtOpenFile, 6) {
     if (host.empty() || !fs::exists(host, ec)) {
         LOG_FIRST(200, "missing %s", name.c_str());
         IoStatus(iosb, kObjectNameNotFound, 5);
-        return host.empty() ? kObjectPathNotFound : kObjectNameNotFound;
+        return host.empty() ? Unmapped(name) : kObjectNameNotFound;
     }
     auto f = std::make_shared<File>();
     f->host = host;

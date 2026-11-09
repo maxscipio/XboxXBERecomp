@@ -1034,13 +1034,12 @@ static uint32_t DosError(uint32_t status) {
 
 KERNEL_EXPORT(301, RtlNtStatusToDosError, 1) { return DosError(a[0]); }
 
-// NtUserIoApcDispatcher(ApcContext, IoStatusBlock, Reserved): the APC XAPI's ReadFileEx and WriteFileEx queue. The
-// context is the title's completion routine, called with the Win32 error, the bytes moved and the OVERLAPPED, whose
-// first member is the status block.
+// (completion routine, iosb, reserved): the APC of XAPI's ReadFileEx / WriteFileEx. The iosb is the OVERLAPPED's
+// first field, and as on Windows a failed transfer reports no bytes.
 KERNEL_EXPORT(232, NtUserIoApcDispatcher, 3) {
-    uint32_t routine = a[0], iosb = a[1];
-    uint32_t status = R32(iosb), moved = R32(iosb + 4);
-    CallGuest(ctx, routine, {status == kSuccess ? 0 : DosError(status), moved, iosb});
+    uint32_t status = R32(a[1]);
+    bool failed = status >= 0xC0000000;  // NT_ERROR
+    CallGuest(ctx, a[0], {failed ? DosError(status) : 0, failed ? 0 : R32(a[1] + 4), a[1]});
     return 0;
 }
 

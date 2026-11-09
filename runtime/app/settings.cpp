@@ -8,7 +8,6 @@
 #include <windows.h>
 
 #include <algorithm>
-#include <atomic>
 #include <fstream>
 #include <mutex>
 #include <sstream>
@@ -16,6 +15,7 @@
 #include <toml++/toml.hpp>
 
 #include "app/app.h"
+#include "audio/audio.h"
 #include "core/log.h"
 
 namespace app {
@@ -58,11 +58,13 @@ void Load() {
     for (uint32_t i = 0; i < 3; i++)
         if (aspect == kAspects[i]) s.aspect = i;
     s.join_ip = t["join_ip"].value_or(s.join_ip);
+    s.audio_output = std::min(t["audio_output"].value_or(s.audio_output), audio::kOutputMono);
     for (const Option& o : kGame.options) {
         if (o.flag) *o.flag = t[o.key].value_or(*o.flag);
         else *o.value = t[o.key].value_or(*o.value);
     }
     if (kGame.load) kGame.load(&t);
+    audio::SetOutputMode(s.audio_output);
 }
 
 namespace {
@@ -81,7 +83,8 @@ toml::table Table() {
                   {"dump_textures", s.dump_textures},
                   {"texture_dump_format", int64_t(s.texture_dump_format)},
                   {"aspect", kAspects[std::min(s.aspect, 2u)]},
-                  {"join_ip", s.join_ip}};
+                  {"join_ip", s.join_ip},
+                  {"audio_output", int64_t(s.audio_output)}};
     for (const Option& o : kGame.options) {
         if (o.flag) t.insert(o.key, *o.flag);
         else t.insert(o.key, int64_t(*o.value));
@@ -92,9 +95,14 @@ toml::table Table() {
 
 }  // namespace
 
+// written beside the real file and renamed over it, so a crash mid save keeps the old settings
 void Save() {
-    std::ofstream f(File());
+    std::filesystem::path tmp = File();
+    tmp += ".tmp";
+    std::ofstream f(tmp);
     f << Table() << "\n";
+    f.close();
+    if (f) MoveFileExW(tmp.c_str(), File().c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
 }
 
 void LogSettings() {
@@ -123,19 +131,6 @@ Mode Output() {
     return Desktop();
 }
 
-bool Widescreen() {
-    // asked per frame and per HUD quad: the desktop mode lookup only runs when the resolution setting changes
-    static std::atomic<uint64_t> key{~0ull};
-    static std::atomic<bool> wide{true};
-    const Settings& s = Get();
-    uint64_t k = uint64_t(s.width) << 34 | uint64_t(s.height) << 2 | std::min(s.aspect, 2u);
-    if (key.exchange(k) != k) {
-        Mode m = Output();
-        wide = s.aspect == 0 ? m.width * 2 >= m.height * 3 : s.aspect == 2;  // auto: 3:2 or wider
-    }
-    return wide;
-}
-
 // Output for every frame: the desktop mode lookup reads the registry, so it runs again only when the resolution
 // setting or the window's monitor changes
 Mode CachedOutput() {
@@ -156,6 +151,14 @@ Mode CachedOutput() {
         mode = Output();
     }
     return mode;
+}
+
+// asked per frame and per HUD quad: CachedOutput costs a monitor lookup, the registry only on a change
+bool Widescreen() {
+    const Settings& s = Get();
+    if (s.aspect) return s.aspect == 2;
+    Mode m = CachedOutput();
+    return m.width * 2 >= m.height * 3;  // auto: 3:2 or wider
 }
 
 float RenderScale(uint32_t guest_height) {

@@ -7,7 +7,6 @@
 #include "app/app.h"
 #include "kernel/kernel.h"
 
-#ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -15,9 +14,6 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
-#else
-#include <unistd.h>
-#endif
 #include "xbe/xbe.h"
 
 namespace dispatch {
@@ -176,7 +172,6 @@ std::wstring HandoverEvent(unsigned long process) {
 void Relaunch(const char* exe) {
     std::fflush(nullptr);  // the guest's files are buffered host streams: what it wrote reaches the disk
     logx::Flush();
-#ifdef _WIN32
     wchar_t self[MAX_PATH];
     GetModuleFileNameW(nullptr, self, MAX_PATH);
     std::wstring path = self;
@@ -205,14 +200,6 @@ void Relaunch(const char* exe) {
         LOGE("relaunch: cannot start %s.exe (%lu)", exe, GetLastError());
     }
     std::_Exit(0);
-#else
-    char self[4096] = {};
-    ssize_t n = readlink("/proc/self/exe", self, sizeof(self) - 1);
-    std::string path = std::string(self, n > 0 ? size_t(n) : 0);
-    path = path.substr(0, path.find_last_of('/') + 1) + exe;
-    execl(path.c_str(), path.c_str(), nullptr);
-    std::_Exit(0);
-#endif
 }
 
 void Shutdown(int code) {

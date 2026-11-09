@@ -29,6 +29,7 @@ struct Settings {
     bool dump_textures = false;      // each texture once into textures\dumps\ beside the exe
     uint32_t texture_dump_format = 0;  // 0 PNG, 1 DDS
     uint32_t aspect = 0;             // 0 from the output's shape, 1 4:3, 2 16:9 (kAspects)
+    uint32_t audio_output = 0;         // audio::kOutputAuto, Stereo, Surround or Mono
     std::string join_ip;                   // co-op: a host past the LAN the system link search also asks
 };
 
@@ -110,6 +111,8 @@ struct GameInfo {
     // the host folder of the console's hard disk (its partitions, the saves on E:), given the folder's name: hdd, or
     // hdd2 and on for a second copy (Instance). Once, before boot; null keeps it beside the exe
     std::filesystem::path (*hard_disk)(const std::wstring& folder);
+    // xbe file name, SHA-1: other releases the executable runs, each from its own [xbe] named config
+    std::vector<std::pair<const char*, const char*>> releases;
 };
 extern const GameInfo kGame;
 
