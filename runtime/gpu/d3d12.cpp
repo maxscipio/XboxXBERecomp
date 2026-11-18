@@ -1494,8 +1494,11 @@ void D3D12Backend::UpdateTargetUsed(uint32_t data) {
 }
 
 bool D3D12Backend::BindTargets(const State& s) {
-    Target* rt = EnsureTarget(s.rt, false);
-    Target* ds = s.rs[kRsZEnable] || s.rs[kRsStencilEnable] ? EnsureTarget(s.zs, true) : nullptr;
+    bool depth = (s.rs[kRsZEnable] || s.rs[kRsStencilEnable]) && !DepthOnlySampled(s);
+    // the colour target on the depth buffer's own memory: one resource cannot be both, so what the console writes there
+    SharedTarget shared = SharedTargetUse(s);
+    Target* rt = depth && shared == SharedTarget::Depth ? nullptr : EnsureTarget(s.rt, false);
+    Target* ds = depth && shared != SharedTarget::Colour ? EnsureTarget(s.zs, true) : nullptr;
     // a depth buffer larger than the colour target is fine, it covers the target's top left corner
     if (rt && ds && (rt->w > ds->w || rt->h > ds->h)) ds = nullptr;
     if (!rt && !ds) return false;
@@ -2100,6 +2103,7 @@ ID3D12Resource* D3D12Backend::BindTargetTexture(const State& s, int stage, const
     }
     if (ext_) ext_->Sampled(d, &t, 0, info);
     sv.Format = t.depth ? kDepthRead : t.fmt;
+    if (!t.depth && NoAlphaFormat(d.format)) info.flags |= kTexOpaque;
     // the console reads the pixels it is about to overwrite: give the draw a copy
     if (feedback) return Feedback(t);
     Transition(t.res.Get(), t.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);

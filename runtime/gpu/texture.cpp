@@ -455,6 +455,21 @@ uint64_t DirtyEpoch(uint32_t data) {
     return it == g_dirty.end() ? 0 : it->second;
 }
 
+bool DepthOnlySampled(const State& s) {
+    constexpr uint32_t kCmpAlways = 0x207;
+    constexpr uint32_t kAddressMask = 0x0FFFFFFF;
+    bool tested = s.rs[kRsZEnable] && s.simple[kMZFunc >> 2] != kCmpAlways;
+    if (!s.zs.header || tested || s.simple[kMZWriteEnable >> 2] || s.rs[kRsStencilEnable]) return false;
+    for (uint32_t t : s.textures)
+        if (t && (kernel::R32(t + 4) & kAddressMask) == (s.zs.data & kAddressMask)) return true;
+    return false;
+}
+
+SharedTarget SharedTargetUse(const State& s) {
+    if (!s.rt.header || !s.zs.header || s.rt.data != s.zs.data) return SharedTarget::None;
+    return s.simple[kMColorWriteEnable >> 2] ? SharedTarget::Colour : SharedTarget::Depth;
+}
+
 bool CopySurfaceMemory(const Surface& src, const Surface& dst, uint32_t count, uint32_t rects, uint32_t points) {
     TextureDesc a, b;
     if (!DescribeSurface(src, a) || !DescribeSurface(dst, b)) return false;

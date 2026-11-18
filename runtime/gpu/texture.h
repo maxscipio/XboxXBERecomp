@@ -52,6 +52,14 @@ bool CopySurfaceMemory(const Surface& src, const Surface& dst, uint32_t count, u
 void MarkDirty(uint32_t resource);
 uint64_t DirtyEpoch(uint32_t data_va);
 
+// the depth buffer is one of the draw's textures and the draw leaves it alone (no depth test that can fail, no depth or
+// stencil writes): the console reads it while it is bound, which the host APIs do not allow, so it is not bound
+bool DepthOnlySampled(const State& s);
+// the colour target and depth buffer share memory: what the draw writes there decides which one is bound (the colour
+// writes off, the depth target; on, the colour target), as a resource cannot be both
+enum class SharedTarget { None, Depth, Colour };
+SharedTarget SharedTargetUse(const State& s);
+
 // vertex declarations and pixel shader constant routing, both follow the XDK's definitions
 void ParseDeclaration(VertexShader& vs);
 // SetPixelShaderConstant: the stages of the current shader mapped to these registers take the values
