@@ -1,9 +1,18 @@
 // controllers through SDL: Xbox, PlayStation and Switch pads read into the console controller's report
 #include "core/input.h"
 
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -363,11 +372,57 @@ void Quiet(int port, Pad& p) {
     else p = Pad{.connected = p.connected};
 }
 
+// mouse look: the counts moved since the last poll, read as a rate into a stick deflection. kFullRate counts a second
+// at 100% sensitivity is full deflection; a deflection begins past kDeadZone (a game's own stick dead zone would
+// swallow slow moves) and follows the rate over about a frame (kSmooth seconds), so polls closer than a frame still
+// read it
+std::atomic<int> g_mouse_dx{0}, g_mouse_dy{0};
+constexpr float kFullRate = 2400.0f, kDeadZone = 0.2f, kSmooth = 1.0f / 60;
+
+void MouseStick(const app::Settings& s, int16_t& rx, int16_t& ry) {
+    static std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();
+    static float sx = 0, sy = 0;
+    auto now = std::chrono::steady_clock::now();
+    float dt = std::clamp(std::chrono::duration<float>(now - last).count(), 0.001f, 0.1f);
+    last = now;
+    float k = s.mouse_sensitivity / 100.0f / kFullRate / dt;
+    auto deflect = [](float v) {
+        if (v == 0) return 0.0f;
+        float a = std::min(std::fabs(v), 1.0f);
+        return std::copysign(kDeadZone + (1 - kDeadZone) * a, v);
+    };
+    float tx = deflect(g_mouse_dx.exchange(0) * k), ty = deflect(-g_mouse_dy.exchange(0) * k);
+    if (s.mouse_invert_y) ty = -ty;
+    float f = std::min(1.0f, dt / kSmooth);
+    sx += (tx - sx) * f;
+    sy += (ty - sy) * f;
+    if (std::fabs(sx) < 0.01f) sx = 0;
+    if (std::fabs(sy) < 0.01f) sy = 0;
+    rx = int16_t(std::clamp(rx + sx * 32767.0f, -32767.0f, 32767.0f));
+    ry = int16_t(std::clamp(ry + sy * 32767.0f, -32767.0f, 32767.0f));
+}
+
 }  // namespace
+
+void MouseMoved(int dx, int dy) {
+    g_mouse_dx += dx;
+    g_mouse_dy += dy;
+}
+
+bool MouseLooking() {
+    HWND hwnd = static_cast<HWND>(app::Window());
+    return app::kGame.mouse_look && app::Get().mouse_look && hwnd && GetForegroundWindow() == hwnd && !app::OverlayOpen();
+}
 
 Pad Poll(int port) {
     Pad p = PollRaw(port);
     Quiet(port, p);
+    if (port == 0 && MouseLooking()) {
+        MouseStick(app::Get(), p.rx, p.ry);
+    } else if (port == 0) {  // nothing kept from before (the settings window, another window in front)
+        g_mouse_dx = 0;
+        g_mouse_dy = 0;
+    }
     if (app::kGame.pad) app::kGame.pad(port, p);
     return p;
 }

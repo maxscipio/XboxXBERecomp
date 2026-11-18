@@ -164,16 +164,69 @@ void ApplyNow() {
     }
 }
 
+// mouse look (Settings::mouse_look): the cursor hidden and held in the window while the mouse plays the right stick
+void HoldCursor(HWND hwnd) {
+    static bool held = false;
+    bool want = input::MouseLooking();
+    if (want) {
+        RECT r;
+        GetClientRect(hwnd, &r);
+        MapWindowPoints(hwnd, nullptr, reinterpret_cast<POINT*>(&r), 2);
+        ClipCursor(&r);
+    } else if (held) {
+        ClipCursor(nullptr);
+    }
+    held = want;
+}
+
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    // mouse look: raw movement, the cursor kept hidden in the window
+    if (msg == WM_INPUT && kGame.mouse_look) {
+        RAWINPUT ri;
+        UINT size = sizeof(ri);
+        if (GetRawInputData(reinterpret_cast<HRAWINPUT>(lp), RID_INPUT, &ri, &size, sizeof(RAWINPUTHEADER)) != UINT(-1) &&
+            ri.header.dwType == RIM_TYPEMOUSE && !(ri.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE) && input::MouseLooking())
+            input::MouseMoved(ri.data.mouse.lLastX, ri.data.mouse.lLastY);
+        HoldCursor(hwnd);
+        return DefWindowProcW(hwnd, msg, wp, lp);
+    }
+    if (msg == WM_SETCURSOR && kGame.mouse_look && LOWORD(lp) == HTCLIENT) {
+        HoldCursor(hwnd);
+        if (input::MouseLooking()) {
+            SetCursor(nullptr);
+            return TRUE;
+        }
+    }
     {
         std::lock_guard lock(UiLock());
         if (ImGui::GetCurrentContext() && ImGui_ImplWin32_WndProcHandler(hwnd, msg, wp, lp)) return 1;
     }
     if (intptr_t result = 0; kGame.message && kGame.message(hwnd, msg, wp, lp, &result)) return result;
+    // Alt+Enter: a window against the full screen mode last used (borderless when the game started in a window), saved
+    // as the settings window's display mode is, and applied now
+    if (msg == WM_SYSKEYDOWN && wp == VK_RETURN && (lp & (1 << 29))) {
+        if (!(lp & (1 << 30))) {
+            static DisplayMode full = DisplayMode::Borderless;
+            {
+                std::lock_guard lock(UiLock());
+                Settings& s = Get();
+                if (s.display_mode != DisplayMode::Windowed) full = s.display_mode;
+                s.display_mode = s.display_mode == DisplayMode::Windowed ? full : DisplayMode::Windowed;
+                Save();
+            }
+            LOGR("Alt+Enter: %s", Get().display_mode == DisplayMode::Windowed    ? "window"
+                                  : Get().display_mode == DisplayMode::Borderless ? "borderless window"
+                                                                                  : "full screen");
+            ApplyNow();
+        }
+        return 0;
+    }
+    if (msg == WM_SYSCHAR && wp == '\r') return 0;  // no beep for Alt+Enter
     switch (msg) {
         case WM_KEYDOWN:
             if (wp == VK_F1 && !(lp & (1 << 30)) && kGame.settings_window) ToggleOverlay();
             if (wp == VK_F3) DumpThreads();
+            if (wp == kGame.screenshot_key && kGame.screenshot_key && !(lp & (1 << 30))) RequestScreenshot();
             if (wp == VK_F2 && !(lp & (1 << 30))) {
                 // info logging and the perf lines, on for the part of a run that is looked at
                 bool on = !logx::All();
@@ -355,6 +408,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     RegisterClassExW(&wc);
     app::g_hwnd = CreateWindowExW(0, wc.lpszClassName, app::kGame.title, WS_POPUP, 0, 0, 1280, 720,
                                   nullptr, nullptr, inst, nullptr);
+    // mouse look: the mouse's raw movement (WM_INPUT), not the cursor's, which stops at the screen's edge
+    if (app::kGame.mouse_look) {
+        RAWINPUTDEVICE rid{0x01, 0x02, 0, app::g_hwnd};  // generic desktop, mouse
+        if (!RegisterRawInputDevices(&rid, 1, sizeof(rid))) LOGW("input: raw mouse input not registered (%lu)", GetLastError());
+    }
     // behind a splash the window stays hidden until the game's first frame; handed over, it is set up hidden
     if (handover) {
         app::ApplyNow();
