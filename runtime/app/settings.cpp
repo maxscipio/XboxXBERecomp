@@ -59,6 +59,11 @@ void Load() {
         if (aspect == kAspects[i]) s.aspect = i;
     s.join_ip = t["join_ip"].value_or(s.join_ip);
     s.audio_output = std::min(t["audio_output"].value_or(s.audio_output), audio::kOutputMono);
+    for (int i = 0; i < 2; i++) {
+        const std::string side = i ? "right_stick_" : "left_stick_";
+        s.stick_deadzone[i] = std::min<uint32_t>(t[side + "deadzone"].value_or(s.stick_deadzone[i]), 50);
+        s.stick_sensitivity[i] = std::clamp<uint32_t>(t[side + "sensitivity"].value_or(s.stick_sensitivity[i]), 25, 300);
+    }
     for (const Option& o : kGame.options) {
         if (o.flag) *o.flag = t[o.key].value_or(*o.flag);
         else *o.value = t[o.key].value_or(*o.value);
@@ -84,7 +89,11 @@ toml::table Table() {
                   {"texture_dump_format", int64_t(s.texture_dump_format)},
                   {"aspect", kAspects[std::min(s.aspect, 2u)]},
                   {"join_ip", s.join_ip},
-                  {"audio_output", int64_t(s.audio_output)}};
+                  {"audio_output", int64_t(s.audio_output)},
+                  {"left_stick_deadzone", int64_t(s.stick_deadzone[0])},
+                  {"right_stick_deadzone", int64_t(s.stick_deadzone[1])},
+                  {"left_stick_sensitivity", int64_t(s.stick_sensitivity[0])},
+                  {"right_stick_sensitivity", int64_t(s.stick_sensitivity[1])}};
     for (const Option& o : kGame.options) {
         if (o.flag) t.insert(o.key, *o.flag);
         else t.insert(o.key, int64_t(*o.value));

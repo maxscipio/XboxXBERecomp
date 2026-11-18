@@ -31,6 +31,12 @@ struct Settings {
     uint32_t aspect = 0;             // 0 from the output's shape, 1 4:3, 2 16:9 (kAspects)
     uint32_t audio_output = 0;         // audio::kOutputAuto, Stereo, Surround or Mono
     std::string join_ip;                   // co-op: a host past the LAN the system link search also asks
+    // a controller's sticks, left [0] and right [1], before the game reads them: a dead zone (percent of the throw from
+    // the centre that reads as centred, the rest stretched to the full throw; the game's own dead zone still follows)
+    // and a sensitivity (percent: 50 gives half the deflection, so half the turning speed at full throw; above 100 full
+    // deflection comes sooner). 0 and 100 leave the stick as it reads
+    uint32_t stick_deadzone[2] = {0, 0};
+    uint32_t stick_sensitivity[2] = {100, 100};
 };
 
 Settings& Get();
@@ -113,6 +119,8 @@ struct GameInfo {
     std::filesystem::path (*hard_disk)(const std::wstring& folder);
     // xbe file name, SHA-1: other releases the executable runs, each from its own [xbe] named config
     std::vector<std::pair<const char*, const char*>> releases;
+    // the game's own dead zone on each stick axis, as a part of full throw: the stick sensitivity scales the throw past it
+    float stick_deadzone = 0;
 };
 extern const GameInfo kGame;
 

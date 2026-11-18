@@ -320,6 +320,33 @@ std::string DeviceName(int port) {
     return port >= 0 && port < 4 ? g_names[port] : std::string();
 }
 
+namespace {
+
+// a stick by the settings (Settings::stick_deadzone, stick_sensitivity): a round dead zone, the throw past it stretched
+// to the full range, then the sensitivity. A game with its own dead zone on each axis (GameInfo::stick_deadzone) reads
+// nothing inside it: the sensitivity scales each axis's throw past it, so a lower one still moves and the game's
+// speed changes in proportion.
+void TuneStick(int16_t& sx, int16_t& sy, uint32_t deadzone, uint32_t sensitivity, float game_deadzone) {
+    if (deadzone == 0 && sensitivity == 100) return;
+    float x = sx / 32767.0f, y = sy / 32767.0f;
+    float m = std::hypot(x, y), dz = deadzone / 100.0f;
+    if (m <= dz) {
+        sx = sy = 0;
+        return;
+    }
+    float r = std::min(m, 1.0f);  // a square gate's corners read past 1 and keep their full throw
+    float k = (r - dz) / (1 - dz) / r, sens = sensitivity / 100.0f, g = std::clamp(game_deadzone, 0.0f, 0.9f);
+    auto tune = [&](float a) {
+        float v = std::fabs(a * k);
+        if (v > g) v = g + (v - g) * sens;
+        return int16_t(std::copysign(std::min(v, 1.0f), a) * 32767.0f);
+    };
+    sx = tune(x);
+    sy = tune(y);
+}
+
+}  // namespace
+
 Pad Poll(int port) {
     Pad p = PollRaw(port);
     if (app::kGame.pad) app::kGame.pad(port, p);
@@ -355,6 +382,9 @@ Pad PollRaw(int port) {
             p.ly = int16_t(-1 - axis(SDL_GAMEPAD_AXIS_LEFTY));
             p.rx = int16_t(axis(SDL_GAMEPAD_AXIS_RIGHTX));
             p.ry = int16_t(-1 - axis(SDL_GAMEPAD_AXIS_RIGHTY));
+            const app::Settings& s = app::Get();
+            TuneStick(p.lx, p.ly, s.stick_deadzone[0], s.stick_sensitivity[0], app::kGame.stick_deadzone);
+            TuneStick(p.rx, p.ry, s.stick_deadzone[1], s.stick_sensitivity[1], app::kGame.stick_deadzone);
         }
     }
     return p;
