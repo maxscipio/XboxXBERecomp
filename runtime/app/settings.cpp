@@ -60,6 +60,8 @@ void Load() {
     std::string msaa = t["msaa"].value_or(std::string(kMsaa[std::min(s.msaa, kMsaaCount - 1)]));
     for (uint32_t i = 0; i < kMsaaCount; i++)
         if (msaa == kMsaa[i]) s.msaa = i;
+    s.fxaa = t["fxaa"].value_or(s.fxaa);
+    s.sharpen = std::min<uint32_t>(t["sharpen"].value_or(s.sharpen), 100);
     s.join_ip = t["join_ip"].value_or(s.join_ip);
     s.audio_output = std::min(t["audio_output"].value_or(s.audio_output), audio::kOutputMono);
     for (int i = 0; i < 2; i++) {
@@ -95,6 +97,8 @@ toml::table Table() {
                   {"texture_dump_format", int64_t(s.texture_dump_format)},
                   {"aspect", kAspects[std::min(s.aspect, kAspectCount - 1)]},
                   {"msaa", kMsaa[std::min(s.msaa, kMsaaCount - 1)]},
+                  {"fxaa", s.fxaa},
+                  {"sharpen", int64_t(s.sharpen)},
                   {"join_ip", s.join_ip},
                   {"audio_output", int64_t(s.audio_output)},
                   {"left_stick_deadzone", int64_t(s.stick_deadzone[0])},

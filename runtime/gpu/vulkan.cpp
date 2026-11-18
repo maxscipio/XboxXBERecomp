@@ -104,6 +104,50 @@ float4 psmain(O i) : SV_Target {
     if (opts.x > 0) c.rgb = float3(lut.Sample(ps, float2(c.r, 0.5)).r, lut.Sample(ps, float2(c.g, 0.5)).g, lut.Sample(ps, float2(c.b, 0.5)).b);
     return float4(c.rgb, opts.y > 0 ? c.a : 1);
 }
+// the finished frame, the settings' passes in one: opts.y 1 for FXAA, opts.z the sharpening 0 to 1. FXAA: where the
+// luma of a pixel and its four neighbours differs enough to be an edge, the colour is averaged along the edge's
+// direction, found from the diagonal neighbours. Sharpening, contrast adaptive (as AMD's CAS): the pixel less its
+// neighbours, weighted down where they already span much of the range, so strong edges get no halos; a source pixel or
+// an output pixel apart, whichever is larger, so it still shows on a frame rendered above the screen's
+float luma(float3 c) { return dot(c, float3(0.299, 0.587, 0.114)); }
+float3 tap(float2 uv) { return img.SampleLevel(ls, uv, 0).rgb; }
+float3 fxaa(float2 uv, float2 t) {
+    float3 m = tap(uv);
+    float lm = luma(m);
+    float ln = luma(tap(uv + float2(0, -t.y))), ls_ = luma(tap(uv + float2(0, t.y)));
+    float le = luma(tap(uv + float2(t.x, 0))), lw = luma(tap(uv + float2(-t.x, 0)));
+    float lo = min(lm, min(min(ln, ls_), min(le, lw))), hi = max(lm, max(max(ln, ls_), max(le, lw)));
+    if (hi - lo < max(0.0312, hi * 0.125)) return m;
+    float lnw = luma(tap(uv + float2(-t.x, -t.y))), lne = luma(tap(uv + float2(t.x, -t.y)));
+    float lsw = luma(tap(uv + float2(-t.x, t.y))), lse = luma(tap(uv + float2(t.x, t.y)));
+    float2 dir = float2(-((lnw + lne) - (lsw + lse)), (lnw + lsw) - (lne + lse));
+    float reduce = max((lnw + lne + lsw + lse) * (0.25 / 8), 1.0 / 128);
+    dir = clamp(dir / (min(abs(dir.x), abs(dir.y)) + reduce), -8, 8) * t;
+    float3 a = 0.5 * (tap(uv + dir * (1.0 / 3 - 0.5)) + tap(uv + dir * (2.0 / 3 - 0.5)));
+    float3 b = a * 0.5 + 0.25 * (tap(uv - dir * 0.5) + tap(uv + dir * 0.5));
+    float lb = luma(b);
+    return lb < lo || lb > hi ? a : b;
+}
+float3 sharpen(float3 c, float2 uv, float2 t, float amount) {
+    float3 n = tap(uv + float2(0, -t.y)), s = tap(uv + float2(0, t.y));
+    float3 e = tap(uv + float2(t.x, 0)), w = tap(uv + float2(-t.x, 0));
+    float3 m = tap(uv);
+    float3 lo = min(m, min(min(n, s), min(e, w))), hi = max(m, max(max(n, s), max(e, w)));
+    float3 amp = sqrt(saturate(min(lo, 1 - hi) / max(hi, 1e-4)));
+    float3 k = amp * amount * -0.2;
+    return saturate(((n + s + e + w) * k + c) / (1 + 4 * k));
+}
+float4 psfinal(O i) : SV_Target {
+    float2 size;
+    img.GetDimensions(size.x, size.y);
+    float2 t = 1 / size;
+    float2 px = max(t, fwidth(i.uv));
+    float3 c = opts.y > 0 ? fxaa(i.uv, t) : tap(i.uv);
+    if (opts.z > 0) c = sharpen(c, i.uv, px, opts.z);
+    c *= opts.w;
+    if (opts.x > 0) c = float3(lut.Sample(ps, float2(c.r, 0.5)).r, lut.Sample(ps, float2(c.g, 0.5)).g, lut.Sample(ps, float2(c.b, 0.5)).b);
+    return float4(c, 1);
+}
 )";
 
 const char* kClearHlsl = R"(
@@ -923,6 +967,7 @@ struct BlitOptions {
     uint32_t taps = 1;   // n x n box filter per pixel
     float mul = 1;       // colour scale
     bool over = false;   // premultiplied over the target, which keeps its alpha
+    bool final = false;  // the finished frame: psfinal with the settings' FXAA and sharpening (taps, alpha unused)
 };
 
 // everything that makes one VkSampler
@@ -1023,7 +1068,8 @@ private:
     // ---- shaders and pipelines ----
     VkShaderModule Module(const std::string& src, const char* entry, const char* profile, uint64_t& hash);
     VkPipeline EnsurePipeline(const PsoKey& k, const Assembled& a, VkShaderModule vs, VkShaderModule ps);
-    VkPipeline EnsureFullscreenPipeline(const char* src, uint32_t mask, bool over, uint64_t seed);
+    VkPipeline EnsureFullscreenPipeline(const char* src, uint32_t mask, bool over, uint64_t seed,
+                                        const char* entry = "psmain");
     void FullScreen(VkPipeline pso, const Img* t0, const Img* t1, VkSampler s0, VkSampler s1, const float* cb,
                     uint32_t cb_bytes);
 
@@ -1969,13 +2015,15 @@ VkPipeline VulkanBackend::EnsurePipeline(const PsoKey& k, const Assembled& a, Vk
     return pso;
 }
 
-VkPipeline VulkanBackend::EnsureFullscreenPipeline(const char* src, uint32_t mask, bool over, uint64_t seed) {
+VkPipeline VulkanBackend::EnsureFullscreenPipeline(const char* src, uint32_t mask, bool over, uint64_t seed,
+                                                   const char* entry) {
     uint64_t key = Hash(src, std::strlen(src), seed << 8 | mask << 1 | (over ? 1 : 0));
+    key = Hash(entry, std::strlen(entry), key);
     auto it = blit_psos_.find(key);
     if (it != blit_psos_.end()) return it->second;
     uint64_t h;
     VkShaderModule vs = Module(src, "vs", "vs_6_0", h);
-    VkShaderModule ps = Module(src, "psmain", "ps_6_0", h);
+    VkShaderModule ps = Module(src, entry, "ps_6_0", h);
     if (!vs || !ps) return blit_psos_[key] = VK_NULL_HANDLE;
     VkPipelineShaderStageCreateInfo stages[2] = {{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO},
                                                  {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO}};
@@ -1984,7 +2032,7 @@ VkPipeline VulkanBackend::EnsureFullscreenPipeline(const char* src, uint32_t mas
     stages[0].pName = "vs";
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
     stages[1].module = ps;
-    stages[1].pName = "psmain";
+    stages[1].pName = entry;
     VkPipelineVertexInputStateCreateInfo vin{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
     ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -2237,10 +2285,14 @@ Img VulkanBackend::MakePixelTexture(const std::vector<uint8_t>& px, uint32_t pit
 
 // src, in its read layout, drawn over the pass's viewport
 void VulkanBackend::Blit(const Img& src, const float uvrect[4], const BlitOptions& o) {
-    VkPipeline pso = EnsureFullscreenPipeline(kBlitHlsl, 0xF, o.over, 0);
+    const app::Settings& st = app::Get();
+    const bool final = o.final && (st.fxaa || st.sharpen);
+    VkPipeline pso = EnsureFullscreenPipeline(kBlitHlsl, 0xF, o.over, 0, final ? "psfinal" : "psmain");
+    if (!pso && final) pso = EnsureFullscreenPipeline(kBlitHlsl, 0xF, o.over, 0);  // a shader that failed: the plain blit
     if (!pso) return;
     float c[8] = {uvrect[0], uvrect[1], uvrect[2], uvrect[3], o.gamma ? 1.0f : 0.0f, o.alpha ? 1.0f : 0.0f,
                   float(o.taps), o.mul};
+    if (final) c[5] = st.fxaa ? 1.0f : 0.0f, c[6] = float(std::min<uint32_t>(st.sharpen, 100)) / 100.0f;
     FullScreen(pso, &src, &lut_, blit_linear_, blit_point_, c, sizeof(c));
 }
 
@@ -2988,7 +3040,7 @@ void VulkanBackend::BlitFrame(Tgt* t) {
     vkCmdSetViewport(cb_, 0, 1, &vp);
     vkCmdSetScissor(cb_, 0, 1, &scissor);
     float uv[4] = {0, 0, 1, 1};
-    Blit(t->img, uv, {.gamma = gamma_});
+    Blit(t->img, uv, {.gamma = gamma_, .final = true});
 }
 
 void VulkanBackend::RenderUi() {

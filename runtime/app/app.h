@@ -30,6 +30,8 @@ struct Settings {
     uint32_t texture_dump_format = 0;  // 0 PNG, 1 DDS
     uint32_t aspect = 0;             // 0 from the output's shape, 1 4:3, 2 16:9, 3 fill the screen (kAspects)
     uint32_t msaa = 0;               // 0 none, 1 2 3 MSAA 2x 4x 8x on the scene (kMsaa)
+    bool fxaa = false;               // FXAA on the finished frame
+    uint32_t sharpen = 0;            // percent, contrast adaptive sharpening of the finished frame
     uint32_t audio_output = 0;         // audio::kOutputAuto, Stereo, Surround or Mono
     std::string join_ip;                   // co-op: a host past the LAN the system link search also asks
     // a controller's sticks, left [0] and right [1], before the game reads them: a dead zone (percent of the throw from

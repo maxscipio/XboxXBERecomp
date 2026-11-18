@@ -65,7 +65,7 @@ A new XDK build needs `xdk/<build>/layout.toml` and signatures made from titles 
 - **Native Direct3D 12 Renderer** - Translates the Xbox's vertex programs, pixel combiners and fixed function pipeline to HLSL, with rendering on its own thread.
 - **Ultrawide** - The aspect setting "screen" shows the frame at the screen's shape (D3D12): screen shaped targets get more pixels across than down, and 2D drawn without a depth test that does not span the frame is squeezed into a centred 16:9 part. The game widens its own 3D views; a title that sets `app::g_aspect` picks its shape itself and is left alone.
 - **MSAA** - 2x, 4x or 8x (F1 settings or `msaa` in the settings file; D3D12): screen sized colour and depth targets draw through multisampled twins that are resolved before anything else reads them. Off for a title with a `gpu::Extension`, which does its own anti-aliasing.
-- **Renderer Extensions** - Allows a game to change render targets, add passes and add to the generated shaders through `gpu::Extension`, set with `gpu::SetExtension` from `GameInfo::init`.
+- **FXAA and sharpening** - on the finished frame, HUD included (F1 settings or `fxaa` and `sharpen`, 0 to 100, in the settings file; D3D12 and Vulkan): one final pass applies FXAA, then contrast adaptive sharpening. Not applied to a title whose `gpu::Extension` displays its own frame.- **Renderer Extensions** - Allows a game to change render targets, add passes and add to the generated shaders through `gpu::Extension`, set with `gpu::SetExtension` from `GameInfo::init`.
 
 ### Audio
 - **DirectSound** - Mixes sound in software through XAudio2, with Xbox ADPCM, streams, mix bins and the effects image.
