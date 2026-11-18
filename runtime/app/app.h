@@ -28,7 +28,7 @@ struct Settings {
     bool custom_textures = true;     // images in textures\replacement\ beside the exe replace the game's
     bool dump_textures = false;      // each texture once into textures\dumps\ beside the exe
     uint32_t texture_dump_format = 0;  // 0 PNG, 1 DDS
-    uint32_t aspect = 0;             // 0 from the output's shape, 1 4:3, 2 16:9 (kAspects)
+    uint32_t aspect = 0;             // 0 from the output's shape, 1 4:3, 2 16:9, 3 fill the screen (kAspects)
     uint32_t audio_output = 0;         // audio::kOutputAuto, Stereo, Surround or Mono
     std::string join_ip;                   // co-op: a host past the LAN the system link search also asks
     // a controller's sticks, left [0] and right [1], before the game reads them: a dead zone (percent of the throw from
@@ -60,12 +60,18 @@ float RenderScale(uint32_t guest_height);
 // the output is 3:2 or wider, or the aspect setting asks for 16:9: the console reports a widescreen TV and the frame is
 // shown 16:9, else 4:3 as on a 4:3 TV. A title reads the TV's shape once, at boot.
 bool Widescreen();
-inline constexpr const char* kAspects[] = {"auto", "4:3", "16:9"};
+inline constexpr const char* kAspects[] = {"auto", "4:3", "16:9", "screen"};
+inline constexpr uint32_t kAspectCount = 4;
 // A title that picks the shown aspect ratio itself sets this (any thread): width over height of the picture the frame
 // is fitted into, black bars around it; 0 follows the output, see Widescreen
 inline std::atomic<float> g_aspect{0};
 inline std::atomic<bool> g_native_render{false};  // render at the console's resolution, whatever the render scale
-float Aspect();  // g_aspect, else 16:9 when Widescreen, else 4:3
+// g_aspect, else the output's shape when the aspect setting fills the screen (never under 16:9), else 16:9 when
+// Widescreen, else 4:3
+float Aspect();
+// the aspect setting fills the screen (ultrawide) and the title has not picked a shape itself: the renderer stretches
+// the screen shaped targets across and keeps the 2D in a centred 16:9 part. A title widens its own 3D views.
+bool FillsScreen();
 
 std::filesystem::path ExeDir();
 // the game in assets (game_files.cpp): its folder and this executable's xbe, from the extracted files or a disc
