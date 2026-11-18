@@ -18,6 +18,10 @@ uint16_t HeldOnAnyController();  // face buttons as XINPUT_GAMEPAD_A/B/X/Y masks
 Pad Poll(int port);
 // the controller as SDL reads it, before GameInfo::pad
 Pad PollRaw(int port);
+// raw mouse movement, from the window thread (WM_INPUT): read into controller 1's right stick (Settings::mouse_look)
+void MouseMoved(int dx, int dy);
+// the mouse plays the right stick now: mouse look on, the game window in front, the settings window shut
+bool MouseLooking();
 // the controller's SDL GUID and name, empty without one on that port
 std::string DeviceId(int port);
 std::string DeviceName(int port);

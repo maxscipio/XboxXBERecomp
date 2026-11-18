@@ -37,6 +37,11 @@ struct Settings {
     // deflection comes sooner). 0 and 100 leave the stick as it reads
     uint32_t stick_deadzone[2] = {0, 0};
     uint32_t stick_sensitivity[2] = {100, 100};
+    // the mouse moves controller 1's right stick, for a title that offers it (GameInfo::mouse_look): the cursor is
+    // held in the window while the game has it
+    bool mouse_look = true;
+    uint32_t mouse_sensitivity = 100;  // percent
+    bool mouse_invert_y = false;
 };
 
 Settings& Get();
@@ -134,12 +139,21 @@ struct GameInfo {
     // the host's settings window: F1, or Back and Start together on a controller. Off for a title that draws its own
     // settings in ui
     bool settings_window = false;
+    // the mouse can play controller 1's right stick (Settings::mouse_look): a shooter's camera and aim
+    bool mouse_look = false;
+    // the key that saves the frame as a PNG (Windows virtual key; 0 off); a title that uses F12 itself moves it
+    uint32_t screenshot_key = 0x7B;  // VK_F12
 };
 extern const GameInfo kGame;
 
 // the settings window (overlay.cpp). DrawUi is the renderers' each frame inside the ImGui frame, UiLock held: the
 // window, then GameInfo::ui. FeedPad runs after the backends' NewFrame and before ImGui::NewFrame.
 bool OverlayOpen();
+// F12 (GameInfo::screenshot_key): the renderers save the next frame, before they draw the interface (screenshot.cpp)
+void RequestScreenshot();
+bool TakeScreenshotRequest();
+void SaveScreenshot(std::vector<uint8_t> bgra, uint32_t w, uint32_t h);  // bgra: rows top down, w * h * 4 bytes
+bool ScreenshotJustSaved();  // for a few seconds after one is written
 void ToggleOverlay();  // any thread
 void OverlayInit();    // window thread, after ImGui's context
 void FeedPad();

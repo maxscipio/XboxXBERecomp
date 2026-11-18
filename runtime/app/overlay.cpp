@@ -392,6 +392,13 @@ void Controller(Settings& s) {
                       "Below 100% the stick turns or moves slower at full throw; above, it reaches full speed sooner."))
             s.stick_sensitivity[i] = uint32_t(sens);
     }
+    if (kGame.mouse_look) {
+        Section("Mouse");
+        RowCheck("Mouse look", &s.mouse_look, "The mouse plays controller 1's right stick: the camera and aim. The pointer stays in the window while the game has it.");
+        int sens = int(s.mouse_sensitivity);
+        if (RowSlider("Mouse sensitivity", &sens, 10, 1000, 10, "%")) s.mouse_sensitivity = uint32_t(sens);
+        RowCheck("Invert vertical look", &s.mouse_invert_y);
+    }
     Section("Test");
     input::Pad pad;
     for (int port = 0; port < 4 && !pad.connected; port++) pad = input::PollRaw(port);

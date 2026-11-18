@@ -1048,6 +1048,8 @@ private:
     void UploadTexture(Tex& tx, const TextureDesc& d, const FormatInfo& fi, const uint8_t* p, const uint32_t* colours);
     void ReleaseOldTextures();
     bool ReadBack(Tgt& t, std::vector<uint8_t>& px);
+    bool EnsureReadback(uint64_t bytes);
+    bool CaptureFrame(Tgt* t);
     float TargetScale() const;
     float RenderTargetShift(const State& s, const DrawShaders& sh) const;
 
@@ -1160,6 +1162,7 @@ private:
     VmaAllocation readback_alloc_ = nullptr;
     uint8_t* readback_map_ = nullptr;
     uint64_t readback_size_ = 0;
+    bool shot_pending_ = false;  // F12: a frame copied into readback_ by the commands being recorded
 
     double fps_ = 0;
     uint32_t fps_n_ = 0;
@@ -2267,6 +2270,25 @@ void VulkanBackend::UploadTarget(Tgt& t, const Surface& s) {
     t.sig = MemSig(t.data, t.bytes);
 }
 
+// the CPU-readable buffer the copies of images to the CPU go through, at least this large
+bool VulkanBackend::EnsureReadback(uint64_t bytes) {
+    if (readback_size_ >= bytes) return true;
+    if (readback_) vmaDestroyBuffer(vma_, readback_, readback_alloc_);
+    readback_ = VK_NULL_HANDLE;
+    readback_size_ = 0;
+    VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bi.size = bytes;
+    bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    VmaAllocationCreateInfo ac{};
+    ac.usage = VMA_MEMORY_USAGE_AUTO;
+    ac.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    VmaAllocationInfo info;
+    if (!Ok(vmaCreateBuffer(vma_, &bi, &ac, &readback_, &readback_alloc_, &info), "readback buffer")) return false;
+    readback_map_ = static_cast<uint8_t*>(info.pMappedData);
+    readback_size_ = bytes;
+    return true;
+}
+
 // the target's pixels at the console's size, BGRA; false when it can't be read
 bool VulkanBackend::ReadBack(Tgt& t, std::vector<uint8_t>& px) {
     Img shrunk;
@@ -2287,23 +2309,9 @@ bool VulkanBackend::ReadBack(Tgt& t, std::vector<uint8_t>& px) {
     }
     Transition(*src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     uint64_t bytes = uint64_t(t.gw) * t.gh * 4;
-    if (readback_size_ < bytes) {
-        if (readback_) vmaDestroyBuffer(vma_, readback_, readback_alloc_);
-        readback_ = VK_NULL_HANDLE;
-        readback_size_ = 0;
-        VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-        bi.size = bytes;
-        bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        VmaAllocationCreateInfo ac{};
-        ac.usage = VMA_MEMORY_USAGE_AUTO;
-        ac.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
-        VmaAllocationInfo info;
-        if (!Ok(vmaCreateBuffer(vma_, &bi, &ac, &readback_, &readback_alloc_, &info), "readback buffer")) {
-            Retire(shrunk);
-            return false;
-        }
-        readback_map_ = static_cast<uint8_t*>(info.pMappedData);
-        readback_size_ = bytes;
+    if (!EnsureReadback(bytes)) {
+        Retire(shrunk);
+        return false;
     }
     VkBufferImageCopy r{};
     r.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
@@ -2995,10 +3003,33 @@ void VulkanBackend::RenderUi() {
     bound_pipeline_ = VK_NULL_HANDLE;
 }
 
+// F12: the frame as shown, drawn again into an image of its own (the swapchain's cannot be read, and its acquire
+// semaphore holds the commands back) and copied to readback_; Present reads it once they are done
+bool VulkanBackend::CaptureFrame(Tgt* t) {
+    uint64_t bytes = uint64_t(bb_w_) * bb_h_ * 4;
+    Img shot;
+    if (!EnsureReadback(bytes) ||
+        !MakeImage(shot, VK_IMAGE_TYPE_2D, kBgra, bb_w_, bb_h_, 1, 1, 1,
+                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, false, false)) {
+        return false;
+    }
+    float black[4] = {0, 0, 0, 1};
+    BeginPass(&shot, nullptr, black);
+    BlitFrame(t);
+    Transition(shot, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    VkBufferImageCopy r{};
+    r.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    r.imageExtent = {bb_w_, bb_h_, 1};
+    vkCmdCopyImageToBuffer(cb_, shot.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback_, 1, &r);
+    Retire(shot);
+    return true;
+}
+
 void VulkanBackend::DrawFrame(Tgt* t, uint32_t image) {
     Img& bb = swap_images_[image];
     if (t) Transition(t->img, ReadLayout(t->img));
     float black[4] = {0, 0, 0, 1};
+    if (t && app::TakeScreenshotRequest()) shot_pending_ = CaptureFrame(t);
     BeginPass(&bb, nullptr, black);
     bound_rt_ = bound_ds_ = nullptr;
     BlitFrame(t);
@@ -3046,6 +3077,12 @@ void VulkanBackend::Present(const Surface& front, bool show) {
         Submit(false, VK_NULL_HANDLE, VK_NULL_HANDLE, signal);
     }
     submitted_presents_.store(signal);
+    if (shot_pending_) {
+        shot_pending_ = false;
+        WaitGpuFrame(presents_);
+        vmaInvalidateAllocation(vma_, readback_alloc_, 0, VK_WHOLE_SIZE);
+        app::SaveScreenshot(std::vector<uint8_t>(readback_map_, readback_map_ + size_t(bb_w_) * bb_h_ * 4), bb_w_, bb_h_);
+    }
     presents_++;
     ReleaseOldTextures();
     NextFrame();
