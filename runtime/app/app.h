@@ -29,6 +29,7 @@ struct Settings {
     bool dump_textures = false;      // each texture once into textures\dumps\ beside the exe
     uint32_t texture_dump_format = 0;  // 0 PNG, 1 DDS
     uint32_t aspect = 0;             // 0 from the output's shape, 1 4:3, 2 16:9, 3 fill the screen (kAspects)
+    uint32_t msaa = 0;               // 0 none, 1 2 3 MSAA 2x 4x 8x on the scene (kMsaa)
     uint32_t audio_output = 0;         // audio::kOutputAuto, Stereo, Surround or Mono
     std::string join_ip;                   // co-op: a host past the LAN the system link search also asks
     // a controller's sticks, left [0] and right [1], before the game reads them: a dead zone (percent of the throw from
@@ -62,6 +63,8 @@ float RenderScale(uint32_t guest_height);
 bool Widescreen();
 inline constexpr const char* kAspects[] = {"auto", "4:3", "16:9", "screen"};
 inline constexpr uint32_t kAspectCount = 4;
+inline constexpr const char* kMsaa[] = {"off", "msaa2", "msaa4", "msaa8"};
+inline constexpr uint32_t kMsaaCount = 4;
 // A title that picks the shown aspect ratio itself sets this (any thread): width over height of the picture the frame
 // is fitted into, black bars around it; 0 follows the output, see Widescreen
 inline std::atomic<float> g_aspect{0};

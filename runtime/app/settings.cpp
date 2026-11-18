@@ -57,6 +57,9 @@ void Load() {
     std::string aspect = t["aspect"].value_or(std::string(kAspects[std::min(s.aspect, kAspectCount - 1)]));
     for (uint32_t i = 0; i < kAspectCount; i++)
         if (aspect == kAspects[i]) s.aspect = i;
+    std::string msaa = t["msaa"].value_or(std::string(kMsaa[std::min(s.msaa, kMsaaCount - 1)]));
+    for (uint32_t i = 0; i < kMsaaCount; i++)
+        if (msaa == kMsaa[i]) s.msaa = i;
     s.join_ip = t["join_ip"].value_or(s.join_ip);
     s.audio_output = std::min(t["audio_output"].value_or(s.audio_output), audio::kOutputMono);
     for (int i = 0; i < 2; i++) {
@@ -91,6 +94,7 @@ toml::table Table() {
                   {"dump_textures", s.dump_textures},
                   {"texture_dump_format", int64_t(s.texture_dump_format)},
                   {"aspect", kAspects[std::min(s.aspect, kAspectCount - 1)]},
+                  {"msaa", kMsaa[std::min(s.msaa, kMsaaCount - 1)]},
                   {"join_ip", s.join_ip},
                   {"audio_output", int64_t(s.audio_output)},
                   {"left_stick_deadzone", int64_t(s.stick_deadzone[0])},
