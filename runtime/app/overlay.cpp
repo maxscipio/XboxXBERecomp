@@ -361,6 +361,10 @@ void Graphics(Settings& s) {
     RowValues("Anisotropic filtering", &s.aniso, {{0, "As the game asks"}, {2, "2x"}, {4, "4x"}, {8, "8x"}, {16, "16x"}});
     RowValues("Antialiasing (MSAA)", &s.msaa, {{0, "Off"}, {1, "MSAA 2x"}, {2, "MSAA 4x"}, {3, "MSAA 8x"}},
               "Smooths the edges of the 3D scene at once (Direct3D 12). Render scale above 100% also smooths edges.");
+    RowCheck("FXAA", &s.fxaa, "Smooths the edges of the finished frame, HUD included; a little softer.");
+    int sharp = int(s.sharpen);
+    if (RowSlider("Sharpening", &sharp, 0, 100, 5, "%", "Contrast adaptive sharpening of the finished frame; applies at once."))
+        s.sharpen = uint32_t(sharp);
     RowValues("Frame rate cap", &s.fps_cap,
               {{30, "30"}, {60, "60"}, {120, "120"}, {144, "144"}, {240, "240"}, {0, "Unlimited"}, {kFpsCapRefresh, "Monitor refresh rate"}},
               "The game sets its own pace; the cap only limits it further.");
