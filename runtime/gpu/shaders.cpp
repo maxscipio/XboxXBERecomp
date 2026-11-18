@@ -266,6 +266,14 @@ const char* kVsEpilogue = R"(
 }
 )";
 
+// the epilogue with the extension's statements over the pixel position p, before it becomes clip space
+std::string VsEpilogue() {
+    std::string s = kVsEpilogue;
+    size_t at = s.find("    q.x = p.x * 2");
+    if (at != std::string::npos) s.insert(at, Hooks().Position());
+    return s;
+}
+
 const char* kVsPrologue = R"(
     int a0 = 0;
     // precise: EQUAL depth passes need bit exact positions
@@ -811,7 +819,7 @@ std::string VertexProgramHlsl(const std::vector<uint32_t>& prog, uint16_t regs, 
         }
         if (k.f(3, 0, 1)) break;  // last instruction
     }
-    s += kVsEpilogue;
+    s += VsEpilogue();
     return s;
 }
 
@@ -924,7 +932,7 @@ std::string FixedVertexHlsl(uint16_t regs, bool pretransformed, uint64_t decode,
         s += "    }\n";
     }
     s += "    oFog = " + v(5, "float4(0,0,0,0)") + ";\n";
-    if (pretransformed) return s + kVsEpilogue;
+    if (pretransformed) return s + VsEpilogue();
     s += R"(
     VOut o;
     // like the pretransformed ones, target sized passes end half a console pixel short of the far edges

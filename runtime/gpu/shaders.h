@@ -76,6 +76,8 @@ struct ShaderHooks {
     virtual std::string Cube(const TexInfo&, int, const std::string&) const { return {}; }
     // after stage i's fetch
     virtual std::string Fetched(const TexInfo&, int) const { return {}; }
+    // statements over p, the pixel position, before the vertex program ends in clip space; surf and ext are in scope
+    virtual std::string Position() const { return {}; }
     // outc to the target, after the alpha test
     virtual std::string Output() const;
 };

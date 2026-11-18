@@ -53,9 +53,11 @@ public:
     // src over the bound viewport; taps per axis, colour times mul
     virtual void Blit(ID3D12Resource* src, DXGI_FORMAT fmt, const float uvrect[4], bool gamma, bool alpha, uint32_t taps, float mul,
                       DXGI_FORMAT rtv) = 0;
-    // a full screen pass: hlsl holds vs and entry, src is t0 to t2, p is b1, blend >= 0 blends by that factor
+    // a full screen pass: hlsl holds vs and entry, src is t0 to t2 (t3 is the gamma ramp), p is b1, blend >= 0 blends by that factor;
+    // an rh with no pointer draws into the targets and viewport already bound, as Display's does
     virtual void Pass(const char* hlsl, const char* entry, DXGI_FORMAT rtv, D3D12_CPU_DESCRIPTOR_HANDLE rh, uint32_t w, uint32_t h,
                       ID3D12Resource* const src[3], const DXGI_FORMAT fmt[3], const float p[8], float blend) = 0;
+    virtual bool Gamma() const = 0;  // the title set a gamma ramp, which the final pass must apply from t3
     virtual void Capture(Target& t, const char* tag, float mul) = 0;  // F3: saves t as NNNN_tag_data
     virtual float Scale() const = 0;                                  // render scale
     virtual void GuestSize(uint32_t& w, uint32_t& h) const = 0;       // the title's back buffer
@@ -85,12 +87,22 @@ public:
     // a texture level decoded for upload
     virtual void Decoded(const TextureDesc&, const FormatInfo&, uint32_t /*face*/, uint32_t /*level*/, const std::vector<uint8_t>& /*px*/,
                          uint32_t /*pitch*/, uint8_t& /*flags*/) {}
+    // a quad list drawn one quad at a time, when the extension places each of its quads apart
+    virtual bool SplitQuads(const State&) { return false; }
+    // before Constants, the extent of the draw's input register 0 as x min, y min, x max, y max; null when it was not read (large draws,
+    // non-float positions); lines: the draw is a line list or strip; tilted: a single quad none of whose edges is axis aligned
+    virtual void Geometry(const float* /*box*/, bool /*lines*/, bool /*tilted*/) {}
+    // the x range [x0, x1) of a draw's viewport and scissor, in pixels of a target w wide, moved as Position moved its vertices
+    virtual void Clip(float& /*x0*/, float& /*x1*/, float /*w*/) {}
     // a draw's constants: the vertex registers as uploaded, DrawConstants::ext; src_blend 1 without blending
     virtual void Constants(float (*/*vsc*/)[4], float* /*ext*/, const Target* /*rt*/, uint32_t /*src_blend*/) {}
     // a target with range other than 1 is read, copied or presented
     virtual void Resolve(Context&, Target&) {}
     // the frame about to be shown: a texture (in a pixel shader resource state, format fmt) to show instead, or null
     virtual ID3D12Resource* Present(Context&, Target&, DXGI_FORMAT& /*fmt*/) { return nullptr; }
+    // the frame to show, src in a pixel shader resource state, onto the back buffer in the viewport the aspect ratio gives it (bound
+    // already): true when the extension drew it, else the plain blit follows
+    virtual bool Display(Context&, ID3D12Resource* /*src*/, DXGI_FORMAT /*fmt*/, const D3D12_VIEWPORT& /*vp*/) { return false; }
 };
 
 inline std::unique_ptr<Extension> g_extension;
