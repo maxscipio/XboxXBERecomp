@@ -50,11 +50,17 @@ struct Mode {
 };
 Mode Desktop();
 Mode Output();
+Mode CachedOutput();  // Output, looked up again only when the resolution setting or the window's monitor changes: cheap every frame
 float RenderScale(uint32_t guest_height);
 // the output is 3:2 or wider, or the aspect setting asks for 16:9: the console reports a widescreen TV and the frame is
 // shown 16:9, else 4:3 as on a 4:3 TV. A title reads the TV's shape once, at boot.
 bool Widescreen();
 inline constexpr const char* kAspects[] = {"auto", "4:3", "16:9"};
+// A title that picks the shown aspect ratio itself sets this (any thread): width over height of the picture the frame
+// is fitted into, black bars around it; 0 follows the output, see Widescreen
+inline std::atomic<float> g_aspect{0};
+inline std::atomic<bool> g_native_render{false};  // render at the console's resolution, whatever the render scale
+float Aspect();  // g_aspect, else 16:9 when Widescreen, else 4:3
 
 std::filesystem::path ExeDir();
 // the game in assets (game_files.cpp): its folder and this executable's xbe, from the extracted files or a disc

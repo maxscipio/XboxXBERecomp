@@ -164,13 +164,20 @@ Mode CachedOutput() {
 
 // asked per frame and per HUD quad: CachedOutput costs a monitor lookup, the registry only on a change
 bool Widescreen() {
+    if (float a = g_aspect; a > 0) return a >= 1.5f;
     const Settings& s = Get();
     if (s.aspect) return s.aspect == 2;
     Mode m = CachedOutput();
     return m.width * 2 >= m.height * 3;  // auto: 3:2 or wider
 }
 
+float Aspect() {
+    if (float a = g_aspect; a > 0) return a;
+    return Widescreen() ? 16.0f / 9.0f : 4.0f / 3.0f;
+}
+
 float RenderScale(uint32_t guest_height) {
+    if (g_native_render) return 1.0f;
     float h = CachedOutput().height * (Get().render_percent / 100.0f);
     return guest_height ? std::max(h / guest_height, 0.1f) : 1.0f;
 }

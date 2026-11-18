@@ -22,6 +22,7 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <unordered_map>
@@ -605,6 +606,7 @@ public:
         h = guest_h_;
     }
     uint64_t Presents() const override { return presents_; }
+    bool Gamma() const override { return gamma_; }
 
 private:
     struct Frame {
@@ -1898,12 +1900,14 @@ void D3D12Backend::Pass(const char* hlsl, const char* entry, DXGI_FORMAT rtv, D3
         sv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         sv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         sv.Texture2D.MipLevels = 1;
-        dev_->CreateShaderResourceView(i < 3 ? src[i] : nullptr, &sv, Cpu(srv_heap_.Get(), slot + i, srv_inc_));
+        dev_->CreateShaderResourceView(i < 3 ? src[i] : lut_.Get(), &sv, Cpu(srv_heap_.Get(), slot + i, srv_inc_));
     }
     Alloc cb = Upload(256, 256);
     std::memcpy(cb.cpu, p, 8 * sizeof(float));
-    cl_->OMSetRenderTargets(1, &rh, FALSE, nullptr);
-    SetFullViewport(w, h);
+    if (rh.ptr) {
+        cl_->OMSetRenderTargets(1, &rh, FALSE, nullptr);
+        SetFullViewport(w, h);
+    }
     if (blend >= 0) {
         float f[4] = {blend, blend, blend, blend};
         cl_->OMSetBlendFactor(f);
@@ -3280,6 +3284,12 @@ void D3D12Backend::SetViewportScissor(const State& s, uint32_t gw) {
         x1 = std::min(x1, LONG(s.scissors[2] * sc));
         y1 = std::min(y1, LONG(s.scissors[3] * sc));
     }
+    if (ext_ && bound_rt_) {
+        float fx0 = float(x0), fx1 = float(x1);
+        ext_->Clip(fx0, fx1, W);
+        x0 = LONG(fx0);
+        x1 = LONG(fx1);
+    }
     D3D12_RECT rect{std::clamp<LONG>(x0, 0, LONG(W)), std::clamp<LONG>(y0, 0, LONG(H)),
                     std::clamp<LONG>(x1, 0, LONG(W)), std::clamp<LONG>(y1, 0, LONG(H))};
     bool same = binds_.rasterizer && !std::memcmp(&vp, &binds_.viewport, sizeof(vp)) &&
@@ -3430,6 +3440,40 @@ constexpr uint32_t kPointList = 1;   // D3DPT_POINTLIST
 constexpr uint32_t kTopDisable = 1;  // the XDK's D3DTOP_DISABLE
 constexpr int kSpriteStage = 3;
 
+// the extent of input register 0 over the draw's vertices, for small draws that read it as floats: x min, y min, x max, y max
+bool PositionBox(const Assembled& a, float box[4], bool& tilted) {
+    tilted = false;
+    const VertexElement& e = a.elements[0];
+    if (!(a.regs & 1) || e.buffer >= a.buffer_count || !a.vertex_count) return false;
+    uint32_t floats = e.format == DXGI_FORMAT_R32G32B32A32_FLOAT ? 4 : e.format == DXGI_FORMAT_R32G32B32_FLOAT ? 3 : 0;
+    const VertexBuffer& b = a.buffers[e.buffer];
+    if (!floats || !b.src || !b.stride || a.vertex_count > 1024 || size_t(e.offset) + floats * 4 > b.stride) return false;
+    uint32_t n = std::min(a.vertex_count, b.bytes / b.stride);
+    if (!n) return false;
+    box[0] = box[1] = std::numeric_limits<float>::max();
+    box[2] = box[3] = std::numeric_limits<float>::lowest();
+    float corners[4][2] = {};
+    for (uint32_t v = 0; v < n; v++) {
+        float p[2];
+        std::memcpy(p, b.src + size_t(v) * b.stride + e.offset, sizeof p);
+        if (v < 4) std::memcpy(corners[v], p, sizeof p);
+        box[0] = std::min(box[0], p[0]);
+        box[1] = std::min(box[1], p[1]);
+        box[2] = std::max(box[2], p[0]);
+        box[3] = std::max(box[3], p[1]);
+    }
+    if (n == 4) {
+        constexpr float kAligned = 0.5f;  // pixels
+        tilted = true;
+        for (int i = 0; i < 4; i++) {
+            const float* u = corners[i];
+            const float* w = corners[(i + 1) & 3];
+            if (std::fabs(u[0] - w[0]) < kAligned || std::fabs(u[1] - w[1]) < kAligned) tilted = false;
+        }
+    }
+    return std::isfinite(box[0] + box[1] + box[2] + box[3]);
+}
+
 // a program's point sprites under the fixed function stages: the XDK builds their combiners from stage 3 alone,
 // the stage with the sprite's coordinates; a pixel shader reads t3 itself. SpriteStageZero disables stage 3.
 bool SpriteOnStage3(const State& s, uint32_t prim) {
@@ -3457,6 +3501,12 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
         Draw(SpriteStageZero(s), prim, start, count, indices);
         return;
     }
+    constexpr uint32_t kQuadVerts = 4, kMaxSplit = 128;
+    if (ext_ && prim == 8 && count > kQuadVerts && count <= kMaxSplit && ext_->SplitQuads(s)) {
+        for (uint32_t i = 0; i + kQuadVerts <= count; i += kQuadVerts)
+            Draw(s, prim, indices ? start : start + i, kQuadVerts, indices ? indices + i * 2 : nullptr);  // 16 bit indices
+        return;
+    }
     PerfScope perf_draw{g_perf.draw};
     g_perf.draws++;
     if (cap_) CapStep(s.rt);
@@ -3466,6 +3516,13 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
     if (ext_) ext_->BeginDraw(s);
     Assembled& a = asm_;
     if (!AssembleDraw(s, prim, start, count, indices, a)) { CAP_DROP("assemble"); return; }
+    if (ext_) {
+        float box[4];
+        bool lines = a.topology == Topology::Lines, tilted = false;
+        // a triangle strip is a mesh, an outline or a glow that follows a world object
+        bool known = !(a.strip && !lines) && PositionBox(a, box, tilted);
+        ext_->Geometry(known ? box : nullptr, lines, known && tilted);
+    }
     // past the ring every upload is a buffer of its own: seconds lost on a frame that draws a whole level once
     if (CurrentFrame().used > kUploadSize - kUploadReserve) Submit(true);
     // the same for the views: wrapping the ring within a frame overwrote views the recorded draws had yet to read
@@ -3904,9 +3961,7 @@ void D3D12Backend::UploadGammaRamp() {
 }
 
 void D3D12Backend::BlitFrame(Target& t, ID3D12Resource* shown, DXGI_FORMAT shown_fmt) {
-    // 16:9 when the console reports a widescreen display, else 4:3
-    bool wide = app::Widescreen();
-    float aspect = wide ? 16.0f / 9.0f : 4.0f / 3.0f;
+    float aspect = app::Aspect();
     float w = float(bb_w_);
     float h = float(bb_h_);
     float vw = std::min(w, h * aspect);
@@ -3917,12 +3972,13 @@ void D3D12Backend::BlitFrame(Target& t, ID3D12Resource* shown, DXGI_FORMAT shown
     cl_->RSSetViewports(1, &vp);
     cl_->RSSetScissorRects(1, &scissor);
     binds_ = {};
-    if (shown) {
-        Blit(shown, shown_fmt, uv, {.gamma = gamma_});
-        return;
+    if (!shown) {
+        Transition(t.res.Get(), t.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        shown = t.res.Get();
+        shown_fmt = t.fmt;
     }
-    Transition(t.res.Get(), t.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-    Blit(t.res.Get(), t.fmt, uv, {.gamma = gamma_});
+    if (ext_ && ext_->Display(*this, shown, shown_fmt, vp)) return;
+    Blit(shown, shown_fmt, uv, {.gamma = gamma_});
 }
 
 void D3D12Backend::SetOverlay(const Overlay& overlay) {
