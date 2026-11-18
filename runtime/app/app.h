@@ -96,6 +96,10 @@ struct Option {  // a setting in the settings file, flag or value
     const char* key;
     bool* flag;
     uint32_t* value;
+    // the settings window's row: a name and a line of help in its footer; a value with choices (null terminated) is a list
+    const char* label = nullptr;
+    const char* help = nullptr;
+    const char* const* choices = nullptr;
 };
 struct GameInfo {
     const wchar_t* title;        // window and splash
@@ -127,8 +131,20 @@ struct GameInfo {
     std::vector<std::pair<const char*, const char*>> releases;
     // the game's own dead zone on each stick axis, as a part of full throw: the stick sensitivity scales the throw past it
     float stick_deadzone = 0;
+    // the host's settings window: F1, or Back and Start together on a controller. Off for a title that draws its own
+    // settings in ui
+    bool settings_window = false;
 };
 extern const GameInfo kGame;
+
+// the settings window (overlay.cpp). DrawUi is the renderers' each frame inside the ImGui frame, UiLock held: the
+// window, then GameInfo::ui. FeedPad runs after the backends' NewFrame and before ImGui::NewFrame.
+bool OverlayOpen();
+void ToggleOverlay();  // any thread
+void OverlayInit();    // window thread, after ImGui's context
+void FeedPad();
+void DrawUi(double fps);
+void Quit();  // closes the game window, as its close button does
 
 // sleeps out the rest of the frame for the fps cap and for the console's pace: the swap interval counts vertical
 // blanks of the 60 Hz the console ran at (2 is 30 frames a second); a title's own frame rate, when set, replaces it

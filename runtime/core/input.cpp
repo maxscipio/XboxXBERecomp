@@ -345,10 +345,29 @@ void TuneStick(int16_t& sx, int16_t& sy, uint32_t deadzone, uint32_t sensitivity
     sy = tune(y);
 }
 
+// while the settings window is open the game sees an idle pad, and after it closes until what closed it is let go
+std::atomic<bool> g_quiet[4];
+
+bool Idle(const Pad& p) {
+    constexpr int kStick = 12000;
+    for (uint8_t a : p.analog)
+        if (a > 40) return false;
+    return !p.buttons && std::abs(p.lx) < kStick && std::abs(p.ly) < kStick && std::abs(p.rx) < kStick && std::abs(p.ry) < kStick;
+}
+
+void Quiet(int port, Pad& p) {
+    if (port < 0 || port > 3) return;
+    if (app::OverlayOpen()) g_quiet[port] = true;
+    if (!g_quiet[port]) return;
+    if (Idle(p)) g_quiet[port] = false;
+    else p = Pad{.connected = p.connected};
+}
+
 }  // namespace
 
 Pad Poll(int port) {
     Pad p = PollRaw(port);
+    Quiet(port, p);
     if (app::kGame.pad) app::kGame.pad(port, p);
     return p;
 }

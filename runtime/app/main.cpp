@@ -172,6 +172,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (intptr_t result = 0; kGame.message && kGame.message(hwnd, msg, wp, lp, &result)) return result;
     switch (msg) {
         case WM_KEYDOWN:
+            if (wp == VK_F1 && !(lp & (1 << 30)) && kGame.settings_window) ToggleOverlay();
             if (wp == VK_F3) DumpThreads();
             if (wp == VK_F2 && !(lp & (1 << 30))) {
                 // info logging and the perf lines, on for the part of a run that is looked at
@@ -181,7 +182,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 diag::PerfFlag() = on;
                 if (!on) LOGR("log: F2, info and perf lines off");
             }
-            if (wp == VK_ESCAPE) PostMessageW(hwnd, WM_CLOSE, 0, 0);
+            if (wp == VK_ESCAPE && !OverlayOpen()) PostMessageW(hwnd, WM_CLOSE, 0, 0);
             return 0;
         case WM_ACTIVATE:
             if (LOWORD(wp) == WA_INACTIVE) {
@@ -368,6 +369,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     io.IniFilename = nullptr;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
     ImGui_ImplWin32_Init(app::g_hwnd);
+    app::OverlayInit();
 
     input::Init();
     app::SetTitleIcon(app::g_hwnd, game.xbe);
