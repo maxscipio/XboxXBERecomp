@@ -114,6 +114,7 @@ struct DrawConstants {
     float zparams[4];    // ReversedDepthHlsl: a w buffer's scale (0 for a z buffer), its far w, the polygon offset
     float vdef[16][4];   // what a vertex program reads from an input no stream supplies: the current vertex attribute
     float uvrect[4][4];  // per stage: the draw's texcoord rect inset by half a texel (min xy, max xy), all zero when unused
+    float hud[4];        // pretransformed x squeezed about hud[1] by 1 + hud[0] (ultrawide 2D); all zero when unused
 };
 
 }  // namespace gpu

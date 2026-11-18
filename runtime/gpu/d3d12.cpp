@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -751,6 +752,14 @@ private:
     void ResetFrame();
     void CountFps();
     void ApplySettings();
+    // a screen shaped target shown wider than its guest shape (ultrawide: the aspect setting fills the screen) gets
+    // more pixels across than down
+    float aspect_ = 0;  // app::Aspect() the targets were made for; 0 when the frame is not stretched
+    float HudSqueeze(const State& s, const Assembled& a) const;
+    float XStretch(uint32_t gw, uint32_t gh) const {
+        if (ext_ || !guest_h_ || gh != guest_h_ || gw < gh || aspect_ <= 0) return 1;
+        return std::max(1.0f, aspect_ * float(gh) / float(gw));
+    }
     ComPtr<ID3D12Resource> Shrink(ID3D12Resource* src, D3D12_RESOURCE_STATES& st, DXGI_FORMAT fmt, uint32_t w,
                                   uint32_t h, const ShrinkOptions& o = {});
     bool ReadBack(ID3D12Resource* res, uint32_t w, uint32_t h, std::vector<uint8_t>& out);
@@ -1235,6 +1244,7 @@ void D3D12Backend::CreateGammaLut() {
 
 void D3D12Backend::LoadSettings() {
     scale_ = app::RenderScale(guest_h_);
+    aspect_ = app::FillsScreen() ? app::Aspect() : 0.0f;
     texturedumper::Update();
     ext_ = g_extension.get();
     if (ext_) {
@@ -1370,7 +1380,7 @@ void D3D12Backend::ReleaseTarget(std::unordered_map<uint64_t, Target>::iterator 
 bool D3D12Backend::CreateTargetResource(Target& t, const Surface& s) {
     float sc = scale_;
     if (ext_) ext_->MakeTarget(s, t.depth, t.gw, t.gh, sc, t.fmt);
-    t.w = std::max(1u, uint32_t(std::lround(t.gw * sc)));
+    t.w = std::max(1u, uint32_t(std::lround(t.gw * sc * XStretch(t.gw, t.gh))));
     t.h = std::max(1u, uint32_t(std::lround(t.gh * sc)));
     D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
     D3D12_RESOURCE_DESC td = Texture2DDesc(DXGI_FORMAT_UNKNOWN, t.w, t.h);
@@ -2044,8 +2054,8 @@ void D3D12Backend::ExpandPoints(D3D12_GRAPHICS_PIPELINE_STATE_DESC& d, bool spri
 
 float D3D12Backend::TargetScale() const {
     const Target* t = bound_rt_ ? bound_rt_ : bound_ds_;
-    if (!t || !t->gw) return 1;
-    return float(t->w) / float(t->gw);
+    if (!t || !t->gh) return 1;
+    return float(t->h) / float(t->gh);
 }
 
 // the XDK's screen space offset puts the console's positions half a pixel right and down of the host's, unless a
@@ -2602,7 +2612,7 @@ bool OffsetsPolygons(const State& s, Topology topology) {
 
 // polygon offset slopes are per console pixel, an upscaled target's pixels are smaller
 float HostSlopeScale(const State& s, const Target* ds) {
-    return Bits(SimpleState(s, kMSlopeScale)) * (ds ? float(ds->w) / ds->gw : 1.0f);
+    return Bits(SimpleState(s, kMSlopeScale)) * (ds ? float(ds->h) / ds->gh : 1.0f);
 }
 
 void D3D12Backend::KeyDepthStencil(const State& s, const Assembled& a, PsoKey& k) {
@@ -3274,19 +3284,20 @@ void D3D12Backend::SetTextureViewsAndSamplers(const State& s, const Assembled& a
 
 // viewport covers the target, the guest viewport is in the shader; scissor clips to it
 void D3D12Backend::SetViewportScissor(const State& s, uint32_t gw) {
-    float W = float(bound_rt_ ? bound_rt_->w : bound_ds_->w);
-    float H = float(bound_rt_ ? bound_rt_->h : bound_ds_->h);
+    const Target* b = bound_rt_ ? bound_rt_ : bound_ds_;
+    float W = float(b->w);
+    float H = float(b->h);
     D3D12_VIEWPORT vp{0, 0, W, H, 0, 1};
-    float sc = W / gw;
-    LONG x0 = LONG(s.viewport.x * sc);
-    LONG y0 = LONG(s.viewport.y * sc);
-    LONG x1 = LONG((s.viewport.x + s.viewport.w) * sc);
-    LONG y1 = LONG((s.viewport.y + s.viewport.h) * sc);
+    float sx = W / gw, sy = b->gh ? H / b->gh : sx;  // across and down differ for a stretched target
+    LONG x0 = LONG(s.viewport.x * sx);
+    LONG y0 = LONG(s.viewport.y * sy);
+    LONG x1 = LONG((s.viewport.x + s.viewport.w) * sx);
+    LONG y1 = LONG((s.viewport.y + s.viewport.h) * sy);
     if (s.scissor_count) {
-        x0 = std::max(x0, LONG(s.scissors[0] * sc));
-        y0 = std::max(y0, LONG(s.scissors[1] * sc));
-        x1 = std::min(x1, LONG(s.scissors[2] * sc));
-        y1 = std::min(y1, LONG(s.scissors[3] * sc));
+        x0 = std::max(x0, LONG(s.scissors[0] * sx));
+        y0 = std::max(y0, LONG(s.scissors[1] * sy));
+        x1 = std::min(x1, LONG(s.scissors[2] * sx));
+        y1 = std::min(y1, LONG(s.scissors[3] * sy));
     }
     if (ext_ && bound_rt_) {
         float fx0 = float(x0), fx1 = float(x1);
@@ -3564,6 +3575,8 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
     GuestExtent size;
     SurfaceSize(bound_rt_ ? s.rt : s.zs, size.w, size.h);
     DrawConstants c{};
+    c.hud[0] = HudSqueeze(s, a) - 1;
+    c.hud[1] = (bound_rt_ ? bound_rt_->gw : guest_w_) * 0.5f;
     FillUvRectConstants(s, prim, count, a, sh, stages, c);
     UploadConstants(s, sh, k, stages, size, c);
     if (ext_) binds_ = {};
@@ -3603,9 +3616,9 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
 
 // a guest rect scaled to the target and clamped to it
 D3D12_RECT ScaledRect(const Target& t, int x0, int y0, int x1, int y1) {
-    float sc = float(t.w) / t.gw;
-    return {std::clamp<LONG>(LONG(x0 * sc), 0, t.w), std::clamp<LONG>(LONG(y0 * sc), 0, t.h),
-            std::clamp<LONG>(LONG(x1 * sc), 0, t.w), std::clamp<LONG>(LONG(y1 * sc), 0, t.h)};
+    float sx = float(t.w) / t.gw, sy = float(t.h) / t.gh;
+    return {std::clamp<LONG>(LONG(x0 * sx), 0, t.w), std::clamp<LONG>(LONG(y0 * sy), 0, t.h),
+            std::clamp<LONG>(LONG(x1 * sx), 0, t.w), std::clamp<LONG>(LONG(y1 * sy), 0, t.h)};
 }
 
 // rs: the rects buffer, reused across targets
@@ -3783,6 +3796,7 @@ void D3D12Backend::CopyByDraw(const Target& src_t, ID3D12Resource* src_res, D3D1
     float gw = src_t.gw * l.kx, gh = src_t.gh * l.ky;  // the source in the guest pixels the rects use
     float src_scale = float(src_t.w) / gw;
     float dst_scale = float(dst_t.w) / dst_t.gw;
+    float dst_scale_y = float(dst_t.h) / dst_t.gh;
     bool listed = l.count && l.src_rects;
     uint32_t n = listed ? l.count : 1;
     for (uint32_t i = 0; i < n; i++) {
@@ -3791,8 +3805,8 @@ void D3D12Backend::CopyByDraw(const Target& src_t, ID3D12Resource* src_res, D3D1
         DrawnRect r{.x0 = 0, .y0 = 0, .x1 = whole_w, .y1 = whole_h};
         if (listed) r = ReadDrawnRect(l.src_rects, l.dst_points, i);
         if (r.x1 <= r.x0 || r.y1 <= r.y0) continue;
-        D3D12_VIEWPORT vp{r.dx * dst_scale, r.dy * dst_scale, (r.x1 - r.x0) * dst_scale, (r.y1 - r.y0) * dst_scale,
-                          0, 1};
+        D3D12_VIEWPORT vp{r.dx * dst_scale, r.dy * dst_scale_y, (r.x1 - r.x0) * dst_scale,
+                          (r.y1 - r.y0) * dst_scale_y, 0, 1};
         LONG right = std::min(LONG(vp.TopLeftX + vp.Width), LONG(dst_t.w));
         LONG bottom = std::min(LONG(vp.TopLeftY + vp.Height), LONG(dst_t.h));
         D3D12_RECT scissor{LONG(vp.TopLeftX), LONG(vp.TopLeftY), right, bottom};
@@ -3819,6 +3833,8 @@ void D3D12Backend::CopyByRegion(const Target& src_t, ID3D12Resource* src_res, D3
     D3D12_TEXTURE_COPY_LOCATION sl{src_res, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
     float src_scale = float(src_t.w) / src_t.gw;
     float dst_scale = float(dst_t.w) / dst_t.gw;
+    float src_scale_y = float(src_t.h) / src_t.gh;
+    float dst_scale_y = float(dst_t.h) / dst_t.gh;
     bool listed = l.count && l.src_rects;
     uint32_t n = listed ? l.count : 1;
     for (uint32_t i = 0; i < n; i++) {
@@ -3830,15 +3846,15 @@ void D3D12Backend::CopyByRegion(const Target& src_t, ID3D12Resource* src_res, D3
             // the source box is in the source's texels, the destination point in the destination's:
             // scaling the box by dst_scale read the wrong region whenever the two scales differed
             b.left = ScaleUnsigned(r.left, src_scale);
-            b.top = ScaleUnsigned(r.top, src_scale);
+            b.top = ScaleUnsigned(r.top, src_scale_y);
             b.right = std::min(ScaleUnsigned(r.right, src_scale), src_t.w);
-            b.bottom = std::min(ScaleUnsigned(r.bottom, src_scale), src_t.h);
+            b.bottom = std::min(ScaleUnsigned(r.bottom, src_scale_y), src_t.h);
             dx = ScaleUnsigned(r.left, dst_scale);
-            dy = ScaleUnsigned(r.top, dst_scale);
+            dy = ScaleUnsigned(r.top, dst_scale_y);
             if (l.dst_points) {
                 GuestPoint p = ReadGuestPoint(l.dst_points, i);
                 dx = ScaleUnsigned(p.x, dst_scale);
-                dy = ScaleUnsigned(p.y, dst_scale);
+                dy = ScaleUnsigned(p.y, dst_scale_y);
             }
         }
         if (b.right <= b.left || b.bottom <= b.top || dx >= dst_t.w || dy >= dst_t.h) continue;
@@ -3872,8 +3888,10 @@ void D3D12Backend::Copy(const Surface& src, const Surface& dst, uint32_t count, 
     Target* dst_t = EnsureTarget(dst, false);
     if (!dst_t || src_t == dst_t) return;
     CopyList l{.count = count, .src_rects = src_rects, .dst_points = dst_points, .kx = src_kx, .ky = src_ky};
-    if (src_t->fmt != dst_t->fmt || src_kx != 1 || src_ky != 1) {
-        // formats or scales differ: drawn across
+    bool same_scale = aspect_ <= 0 || (src_t->w * dst_t->gw == dst_t->w * src_t->gw &&
+                                       src_t->h * dst_t->gh == dst_t->h * src_t->gh);
+    if (src_t->fmt != dst_t->fmt || src_kx != 1 || src_ky != 1 || !same_scale) {
+        // formats or scales differ (a stretched target and an unstretched one): drawn across
         CopyByDraw(*src_t, src_t->res.Get(), src_t->state, *dst_t, l);
         return;
     }
@@ -4048,8 +4066,7 @@ void D3D12Backend::DrawOverlay(const Target& frame) {
     Tex* tx = OverlayTexture();
     if (!tx) return;
     const Overlay& o = overlay_;
-    bool wide = app::Widescreen();
-    float aspect = wide ? 16.0f / 9.0f : 4.0f / 3.0f;
+    float aspect = app::Aspect();
     float w = float(bb_w_), h = float(bb_h_);
     float vw = std::min(w, h * aspect), vh = vw / aspect;
     float ox = (w - vw) / 2, oy = (h - vh) / 2;
@@ -4262,6 +4279,12 @@ void D3D12Backend::ApplySettings() {
     if (texturedumper::Update()) ReleasePackTextures();
     float want = app::RenderScale(guest_h_);
     bool remake = ext_ && ext_->Settings();
+    float aspect = app::FillsScreen() ? app::Aspect() : 0.0f;
+    if (std::fabs(aspect - aspect_) > 1e-4f) {
+        // the targets are made again at the new shape (colour targets start empty, as for a new render scale)
+        aspect_ = aspect;
+        remake = true;
+    }
     if (std::fabs(want - scale_) > 1e-4f || remake) {
         Flush();
         for (auto& [key, tg] : targets_) (tg.depth ? free_dsv_ : free_rtv_).push_back(tg.view);
@@ -4270,6 +4293,33 @@ void D3D12Backend::ApplySettings() {
         if (ext_) ext_->Reset(*this);
         bound_rt_ = bound_ds_ = nullptr;
     }
+}
+
+// Ultrawide: a title lays out its 2D (HUD, menus) for 16:9; shown wider it would stretch. Pretransformed draws without
+// a depth test on a stretched screen target are squeezed into the centred 16:9 part, unless they span the whole width
+// (full screen passes: the frame's own copy, blurs, movies). Depth tested ones (light glows, their visibility probes)
+// sit at world positions and stay. Returns the factor across, 1 for none.
+float D3D12Backend::HudSqueeze(const State& s, const Assembled& a) const {
+    constexpr float kWide = 16.0f / 9.0f;
+    if (!a.pretransformed || s.rs[kRsZEnable] || aspect_ <= kWide + 1e-3f || !bound_rt_) return 1;
+    const Target& t = *bound_rt_;
+    if (XStretch(t.gw, t.gh) <= 1) return 1;
+    // the draw's extent across, from register 0's x
+    float lo = 1e30f, hi = -1e30f;
+    auto see = [&](float x) { lo = std::min(lo, x), hi = std::max(hi, x); };
+    if (!a.vertices.empty()) {
+        uint32_t per = uint32_t(std::popcount(a.regs)) * 4;
+        for (uint32_t v = 0; per && v < a.vertex_count; v++) see(a.vertices[size_t(v) * per]);
+    } else if ((a.regs & 1) && a.elements[0].buffer < a.buffer_count) {
+        const VertexBuffer& b = a.buffers[a.elements[0].buffer];
+        for (uint32_t v = 0; b.src && b.stride && v < b.bytes / b.stride && v < 4096; v++) {
+            float x;
+            std::memcpy(&x, b.src + size_t(v) * b.stride + a.elements[0].offset, 4);
+            see(x);
+        }
+    }
+    if (lo > hi || (lo <= 1.0f && hi >= float(t.gw) - 1.0f)) return 1;
+    return kWide / aspect_;
 }
 
 // the target resolved, then shrunk with o when it is not guest sized BGRA; res null on failure

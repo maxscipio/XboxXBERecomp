@@ -343,9 +343,9 @@ void Display(Settings& s) {
         ImGui::EndPopup();
     }
     RowCheck("Vertical sync", &s.vsync);
-    int aspect = int(std::min<uint32_t>(s.aspect, 2));
-    const char* aspects[] = {"From the screen's shape", "4:3", "16:9 (widescreen)"};
-    if (RowChoice("Aspect ratio", &aspect, aspects, 3,
+    int aspect = int(std::min<uint32_t>(s.aspect, kAspectCount - 1));
+    const char* aspects[] = {"From the screen's shape", "4:3", "16:9 (widescreen)", "Fill the screen (ultrawide)"};
+    if (RowChoice("Aspect ratio", &aspect, aspects, int(kAspectCount),
                   "Applies at the next start (the game reads its TV setting when it boots)."))
         s.aspect = uint32_t(aspect);
     if (apply) {

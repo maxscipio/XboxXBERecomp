@@ -54,8 +54,8 @@ void Load() {
     s.custom_textures = t["custom_textures"].value_or(s.custom_textures);
     s.dump_textures = t["dump_textures"].value_or(s.dump_textures);
     s.texture_dump_format = std::min(t["texture_dump_format"].value_or(s.texture_dump_format), 1u);
-    std::string aspect = t["aspect"].value_or(std::string(kAspects[std::min(s.aspect, 2u)]));
-    for (uint32_t i = 0; i < 3; i++)
+    std::string aspect = t["aspect"].value_or(std::string(kAspects[std::min(s.aspect, kAspectCount - 1)]));
+    for (uint32_t i = 0; i < kAspectCount; i++)
         if (aspect == kAspects[i]) s.aspect = i;
     s.join_ip = t["join_ip"].value_or(s.join_ip);
     s.audio_output = std::min(t["audio_output"].value_or(s.audio_output), audio::kOutputMono);
@@ -90,7 +90,7 @@ toml::table Table() {
                   {"custom_textures", s.custom_textures},
                   {"dump_textures", s.dump_textures},
                   {"texture_dump_format", int64_t(s.texture_dump_format)},
-                  {"aspect", kAspects[std::min(s.aspect, 2u)]},
+                  {"aspect", kAspects[std::min(s.aspect, kAspectCount - 1)]},
                   {"join_ip", s.join_ip},
                   {"audio_output", int64_t(s.audio_output)},
                   {"left_stick_deadzone", int64_t(s.stick_deadzone[0])},
@@ -174,15 +174,21 @@ Mode CachedOutput() {
 bool Widescreen() {
     if (float a = g_aspect; a > 0) return a >= 1.5f;
     const Settings& s = Get();
-    if (s.aspect) return s.aspect == 2;
+    if (s.aspect) return s.aspect >= 2;
     Mode m = CachedOutput();
     return m.width * 2 >= m.height * 3;  // auto: 3:2 or wider
 }
 
 float Aspect() {
     if (float a = g_aspect; a > 0) return a;
+    if (Get().aspect == 3) {
+        Mode m = CachedOutput();
+        return m.height ? std::max(16.0f / 9.0f, float(m.width) / float(m.height)) : 16.0f / 9.0f;
+    }
     return Widescreen() ? 16.0f / 9.0f : 4.0f / 3.0f;
 }
+
+bool FillsScreen() { return g_aspect.load() <= 0 && Get().aspect == 3; }
 
 float RenderScale(uint32_t guest_height) {
     if (g_native_render) return 1.0f;
