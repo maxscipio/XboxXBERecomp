@@ -2987,8 +2987,9 @@ void VulkanBackend::RenderUi() {
     std::lock_guard lock(app::UiLock());
     ImGui_ImplVulkan_NewFrame();
     ImGui_ImplWin32_NewFrame();
+    app::FeedPad();
     ImGui::NewFrame();
-    if (app::kGame.ui) app::kGame.ui(fps_);
+    app::DrawUi(fps_);
     ImGui::Render();
     ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cb_);
     bound_pipeline_ = VK_NULL_HANDLE;

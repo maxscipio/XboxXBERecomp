@@ -4098,8 +4098,9 @@ void D3D12Backend::RenderUi() {
     std::lock_guard lock(app::UiLock());
     ImGui_ImplDX12_NewFrame();
     ImGui_ImplWin32_NewFrame();
+    app::FeedPad();
     ImGui::NewFrame();
-    if (app::kGame.ui) app::kGame.ui(fps_);
+    app::DrawUi(fps_);
     ImGui::Render();
     ID3D12DescriptorHeap* uh[] = {ui_heap_.Get()};
     cl_->SetDescriptorHeaps(1, uh);
