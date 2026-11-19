@@ -66,6 +66,12 @@ void Load() {
     s.alpha_coverage = t["alpha_coverage"].value_or(s.alpha_coverage);
     s.low_latency = t["low_latency"].value_or(s.low_latency);
     s.sharpen = std::min<uint32_t>(t["sharpen"].value_or(s.sharpen), 100);
+    s.console_look = t["console_look"].value_or(s.console_look);
+    s.crt = t["crt"].value_or(s.crt);
+    s.crt_scanlines = std::min<uint32_t>(t["crt_scanlines"].value_or(s.crt_scanlines), 100);
+    s.crt_softness = std::min<uint32_t>(t["crt_softness"].value_or(s.crt_softness), 100);
+    s.crt_mask = std::min<uint32_t>(t["crt_mask"].value_or(s.crt_mask), 100);
+    s.crt_curve = std::min<uint32_t>(t["crt_curve"].value_or(s.crt_curve), 100);
     s.join_ip = t["join_ip"].value_or(s.join_ip);
     s.audio_output = std::min(t["audio_output"].value_or(s.audio_output), audio::kOutputMono);
     for (int i = 0; i < 2; i++) {
@@ -107,6 +113,12 @@ toml::table Table() {
                   {"alpha_coverage", s.alpha_coverage},
                   {"low_latency", s.low_latency},
                   {"sharpen", int64_t(s.sharpen)},
+                  {"console_look", s.console_look},
+                  {"crt", s.crt},
+                  {"crt_scanlines", int64_t(s.crt_scanlines)},
+                  {"crt_softness", int64_t(s.crt_softness)},
+                  {"crt_mask", int64_t(s.crt_mask)},
+                  {"crt_curve", int64_t(s.crt_curve)},
                   {"join_ip", s.join_ip},
                   {"audio_output", int64_t(s.audio_output)},
                   {"left_stick_deadzone", int64_t(s.stick_deadzone[0])},
@@ -190,6 +202,7 @@ Mode CachedOutput() {
 bool Widescreen() {
     if (float a = g_aspect; a > 0) return a >= 1.5f;
     const Settings& s = Get();
+    if (s.console_look) return false;
     if (s.aspect) return s.aspect >= 2;
     Mode m = CachedOutput();
     return m.width * 2 >= m.height * 3;  // auto: 3:2 or wider
@@ -197,6 +210,7 @@ bool Widescreen() {
 
 float Aspect() {
     if (float a = g_aspect; a > 0) return a;
+    if (Get().console_look) return 4.0f / 3.0f;
     if (Get().aspect == 3) {
         Mode m = CachedOutput();
         return m.height ? std::max(16.0f / 9.0f, float(m.width) / float(m.height)) : 16.0f / 9.0f;
@@ -204,10 +218,10 @@ float Aspect() {
     return Widescreen() ? 16.0f / 9.0f : 4.0f / 3.0f;
 }
 
-bool FillsScreen() { return g_aspect.load() <= 0 && Get().aspect == 3; }
+bool FillsScreen() { return g_aspect.load() <= 0 && !Get().console_look && Get().aspect == 3; }
 
 float RenderScale(uint32_t guest_height) {
-    if (g_native_render) return 1.0f;
+    if (g_native_render || Get().console_look) return 1.0f;
     float h = CachedOutput().height * (Get().render_percent / 100.0f);
     return guest_height ? std::max(h / guest_height, 0.1f) : 1.0f;
 }
