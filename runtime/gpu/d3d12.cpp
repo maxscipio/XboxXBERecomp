@@ -135,7 +135,7 @@ bool CaptureOn() {
 }
 
 const char* kBlitHlsl = R"(
-cbuffer B : register(b1) { float4 uvrect; float4 opts; };
+cbuffer B : register(b1) { float4 uvrect; float4 opts; float4 crt0; float4 crt1; };
 Texture2D img : register(t0);
 Texture2D lut : register(t1);
 SamplerState ls : register(s0);
@@ -224,6 +224,49 @@ float4 psfinal(O i) : SV_Target {
     float3 c = (mode & 2) != 0 ? scaled(i.uv, t, fwidth(i.uv)) : tap(i.uv);
     if ((mode & 1) != 0) c = fxaa(c, i.uv, t);
     if (opts.z > 0) c = sharpen(c, i.uv, px, opts.z);
+    c *= opts.w;
+    if (opts.x > 0) c = float3(lut.Sample(ps, float2(c.r, 0.5)).r, lut.Sample(ps, float2(c.g, 0.5)).g, lut.Sample(ps, float2(c.b, 0.5)).b);
+    return float4(c, 1);
+}
+// The finished frame as a 4:3 CRT showed the console's lines (Settings::crt), over the viewport. crt0 = the game's columns
+// and lines, scanlines, softness; crt1 = mask, curve. Light is mixed in linear space: each console line is a beam, wider
+// where it is brighter, with dark gaps between the lines and a soft horizontal edge, as the electron beam draws it on a
+// screen whose pixels are not squares.
+float3 crtlin(float3 c) { return pow(max(c, 0), 2.4); }
+float4 pscrt(O i) : SV_Target {
+    float cols = crt0.x, lines = crt0.y, scan = crt0.z, soft = crt0.w, mask = crt1.x, curve = crt1.y;
+    float2 s = i.uv * 2 - 1;
+    float k = curve * 0.15;
+    float2 d = s * (1 + k * s.yx * s.yx);  // glass bulging out: the corners reach past the picture
+    float2 uv = d * 0.5 + 0.5;
+    float2 out_of = abs(d) - 1;
+    float inside = curve > 0 ? 1 - smoothstep(-0.012, 0.0, max(out_of.x, out_of.y)) : 1;
+    if (inside <= 0) return float4(0, 0, 0, 1);
+    float y = uv.y * lines;
+    float line_id = floor(y);
+    float f = y - line_id;
+    float vy = (line_id + 0.5) / lines;
+    float sg = lerp(0.35, 0.9, soft);
+    float3 sum = 0;
+    float ws = 0;
+    [unroll] for (int t = -3; t <= 3; t++) {
+        float o = t * 0.5;
+        float w = exp(-o * o / (2 * sg * sg));
+        sum += w * crtlin(img.SampleLevel(ls, float2(uv.x + o / cols, vy), 0).rgb);
+        ws += w;
+    }
+    float3 c = sum / ws;
+    float lum = max(c.r, max(c.g, c.b));
+    float sigma = lerp(0.28, 0.55, saturate(lum));
+    float dy = f - 0.5;
+    float beam = exp(-dy * dy / (2 * sigma * sigma)) / lerp(0.65, 0.88, saturate(lum));  // the line's mean is 1
+    c *= lerp(1, beam, scan);
+    // the phosphor triads: every third column lit red, green and blue, the mean light kept
+    int ph = (int)fmod(i.p.x, 3);
+    float3 oh = float3(ph == 0, ph == 1, ph == 2);
+    c *= lerp(1, 0.5 + 1.5 * oh, mask);
+    c *= 1 - curve * 0.3 * dot(s, s) * 0.5;  // the glass is darker towards the corners
+    c = pow(saturate(c), 1 / 2.4) * inside;
     c *= opts.w;
     if (opts.x > 0) c = float3(lut.Sample(ps, float2(c.r, 0.5)).r, lut.Sample(ps, float2(c.g, 0.5)).g, lut.Sample(ps, float2(c.b, 0.5)).b);
     return float4(c, 1);
@@ -586,6 +629,7 @@ struct BlitOptions {
     DXGI_FORMAT rtv = kBgra;  // the target's format
     bool over = false;        // premultiplied over the target, which keeps its alpha
     bool final = false;       // the finished frame: psfinal with the settings' FXAA and sharpening (taps, alpha unused)
+    uint32_t guest_w = 0, guest_h = 0;  // with final: the game's own size, the CRT filter's columns and lines (0 without it)
     uint32_t samples = 1;     // the target's sample count
 };
 
@@ -813,7 +857,7 @@ private:
     ID3DBlob* Compile(const std::string& src, const char* entry, const char* profile, uint64_t& hash);
     // Blit's pipeline
     ID3D12PipelineState* EnsureBlitPipeline(DXGI_FORMAT rtv, bool over = false, bool final = false,
-                                            uint32_t samples = 1);
+                                            uint32_t samples = 1, bool crt = false);
     D3D12_GRAPHICS_PIPELINE_STATE_DESC FullScreenPipelineDesc(ID3DBlob* vs, ID3DBlob* ps, DXGI_FORMAT rtv) const;
     // Init, in order, each callee right after its caller
     bool CreateDevice();
@@ -1907,14 +1951,19 @@ void D3D12Backend::Blit(ID3D12Resource* src, DXGI_FORMAT fmt, const float uvrect
     dev_->CreateShaderResourceView(lut_.Get(), &sv, Cpu(srv_heap_.Get(), slot + 1, srv_inc_));
     uint32_t si = EnsureBlitSamplers();
     Alloc cb = Upload(256, 256);
-    float c[8] = {uvrect[0], uvrect[1], uvrect[2], uvrect[3],
-                  o.gamma ? 1.0f : 0.0f, o.alpha ? 1.0f : 0.0f, float(o.taps), o.mul};
+    float c[16] = {uvrect[0], uvrect[1], uvrect[2], uvrect[3],
+                   o.gamma ? 1.0f : 0.0f, o.alpha ? 1.0f : 0.0f, float(o.taps), o.mul};
     const app::Settings& st = app::Get();
-    const bool final = o.final && (st.fxaa || st.sharpen || st.scale_filter);
+    const bool crt = o.final && st.crt && o.guest_w && o.guest_h;
+    const bool final = !crt && o.final && (st.fxaa || st.sharpen || st.scale_filter);
     if (final) c[5] = float((st.fxaa && !st.smaa ? 1 : 0) | (st.scale_filter ? 2 : 0)), c[6] = float(std::min<uint32_t>(st.sharpen, 100)) / 100.0f;
+    if (crt) {
+        c[8] = float(o.guest_w), c[9] = float(o.guest_h), c[10] = st.crt_scanlines / 100.0f, c[11] = st.crt_softness / 100.0f;
+        c[12] = st.crt_mask / 100.0f, c[13] = st.crt_curve / 100.0f;
+    }
     std::memcpy(cb.cpu, c, sizeof(c));
-    ID3D12PipelineState* pso = EnsureBlitPipeline(o.rtv, o.over, final, o.samples);
-    if (!pso && final) pso = EnsureBlitPipeline(o.rtv, o.over);  // a shader that failed: the plain blit
+    ID3D12PipelineState* pso = EnsureBlitPipeline(o.rtv, o.over, final, o.samples, crt);
+    if (!pso && (final || crt)) pso = EnsureBlitPipeline(o.rtv, o.over);  // a shader that failed: the plain blit
     if (pso) DrawFullScreen(pso, cb.gpu, slot, si);
 }
 
@@ -2037,12 +2086,12 @@ D3D12_GRAPHICS_PIPELINE_STATE_DESC D3D12Backend::FullScreenPipelineDesc(ID3DBlob
     return d;
 }
 
-ID3D12PipelineState* D3D12Backend::EnsureBlitPipeline(DXGI_FORMAT rtv, bool over, bool final, uint32_t samples) {
-    auto& pso = blit_psos_[uint64_t(rtv) | uint64_t(over) << 32 | uint64_t(final) << 33 | uint64_t(samples) << 40];
+ID3D12PipelineState* D3D12Backend::EnsureBlitPipeline(DXGI_FORMAT rtv, bool over, bool final, uint32_t samples, bool crt) {
+    auto& pso = blit_psos_[uint64_t(rtv) | uint64_t(over) << 32 | uint64_t(final) << 33 | uint64_t(crt) << 34 | uint64_t(samples) << 40];
     if (pso) return pso.Get();
     uint64_t h;
     ID3DBlob* vs = Compile(kBlitHlsl, "vs", "vs_5_0", h);
-    ID3DBlob* ps = Compile(kBlitHlsl, final ? "psfinal" : "psmain", "ps_5_0", h);
+    ID3DBlob* ps = Compile(kBlitHlsl, crt ? "pscrt" : final ? "psfinal" : "psmain", "ps_5_0", h);
     if (!vs || !ps) return nullptr;
     D3D12_GRAPHICS_PIPELINE_STATE_DESC d = FullScreenPipelineDesc(vs, ps, rtv);
     d.SampleDesc.Count = samples;
@@ -4311,7 +4360,7 @@ void D3D12Backend::BlitFrame(Target& t, ID3D12Resource* shown, DXGI_FORMAT shown
         shown_fmt = t.fmt;
     }
     if (ext_ && ext_->Display(*this, shown, shown_fmt, vp)) return;
-    Blit(shown, shown_fmt, uv, {.gamma = gamma_, .final = true});
+    Blit(shown, shown_fmt, uv, {.gamma = gamma_, .final = true, .guest_w = t.gw, .guest_h = t.gh});
 }
 
 void D3D12Backend::SetOverlay(const Overlay& overlay) {

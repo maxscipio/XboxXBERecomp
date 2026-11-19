@@ -36,6 +36,16 @@ struct Settings {
     bool alpha_coverage = false;     // with MSAA, alpha tested edges (fences, leaves) get partial coverage
     bool low_latency = false;        // a waitable swap chain holding one frame, at the next start
     uint32_t sharpen = 0;            // percent, contrast adaptive sharpening of the finished frame
+    // the console's picture: 4:3 at the console's resolution (bars on a wide screen), whatever the aspect and render scale
+    // settings say; a title that picks its own shape is left alone
+    bool console_look = false;
+    // the finished frame as a CRT television showed the console's lines, each in percent (Direct3D 12); replaces FXAA,
+    // sharpening and the scaling filter
+    bool crt = false;
+    uint32_t crt_scanlines = 60;     // the dark gaps between the console's lines
+    uint32_t crt_softness = 50;      // how far a pixel's light bleeds sideways
+    uint32_t crt_mask = 30;          // the red, green and blue phosphor dots
+    uint32_t crt_curve = 0;          // curved glass: bent edges, dark corners
     uint32_t audio_output = 0;         // audio::kOutputAuto, Stereo, Surround or Mono
     std::string join_ip;                   // co-op: a host past the LAN the system link search also asks
     // a controller's sticks, left [0] and right [1], before the game reads them: a dead zone (percent of the throw from

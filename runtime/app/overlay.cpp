@@ -348,6 +348,9 @@ void Display(Settings& s) {
     if (RowChoice("Aspect ratio", &aspect, aspects, int(kAspectCount),
                   "Applies at the next start (the game reads its TV setting when it boots)."))
         s.aspect = uint32_t(aspect);
+    RowCheck("Console look", &s.console_look,
+             "The picture as the console drew it: 4:3 at its own resolution, with bars on a wide screen. Overrides aspect ratio "
+             "and render scale; applies at the next start.");
     if (apply) {
         Changed();
         ApplyDisplay();
@@ -377,6 +380,19 @@ void Graphics(Settings& s) {
     int sharp = int(s.sharpen);
     if (RowSlider("Sharpening", &sharp, 0, 100, 5, "%", "Contrast adaptive sharpening of the finished frame; applies at once."))
         s.sharpen = uint32_t(sharp);
+    RowCheck("CRT filter", &s.crt,
+             "The frame as a CRT television showed the console's lines (Direct3D 12). Replaces edge smoothing, sharpening and the "
+             "scaling filter; best with Console look.");
+    if (s.crt) {
+        auto slider = [](const char* label, uint32_t* v, const char* tip) {
+            int i = int(*v);
+            if (RowSlider(label, &i, 0, 100, 5, "%", tip)) *v = uint32_t(i);
+        };
+        slider("CRT scanlines", &s.crt_scanlines, "The dark gaps between the console's lines.");
+        slider("CRT beam softness", &s.crt_softness, "How far a pixel's light bleeds sideways: a CRT's pixels are not sharp squares.");
+        slider("CRT phosphor mask", &s.crt_mask, "The red, green and blue dots of the screen. Shows best at 1440 lines and up.");
+        slider("CRT curved glass", &s.crt_curve, "Bends the picture's edges and darkens the corners.");
+    }
     RowCheck("Low latency", &s.low_latency,
              "Applies at the next start. Holds one finished frame instead of several: less input lag, but a slow frame costs more.");
     RowValues("Frame rate cap", &s.fps_cap,
