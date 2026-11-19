@@ -1,0 +1,429 @@
+diff --git a/src/common/enhance.cpp b/src/common/enhance.cpp
+index 50da41c..f72fbcf 100644
+--- a/src/common/enhance.cpp
++++ b/src/common/enhance.cpp
+@@ -2,12 +2,14 @@
+ 
+ #include <algorithm>
+ #include <atomic>
++#include <cmath>
+ #include <cstdio>
+ #include <cstring>
+ #include <set>
+ #include <string>
+ 
+ #include "core/log.h"
++#include "cpu/x86_ops.h"
+ #include "gpu/ext.h"
+ 
+ namespace enhance {
+@@ -20,6 +22,21 @@ uint32_t ssao_radius = 1000;
+ uint32_t ssao_debug = 0;
+ uint32_t shadow_scale = 0;
+ uint32_t draw_distance = 100;
++bool crt = true;
++uint32_t crt_scanlines = 60;
++uint32_t crt_softness = 50;
++uint32_t crt_mask = 30;
++uint32_t crt_curve = 0;
++
++namespace {
++std::atomic<float> g_aspect{4.0f / 3.0f};
++std::atomic<bool> g_crt{false};
++}  // namespace
++
++void SetDisplay(float aspect, bool crt_on) {
++    g_aspect = aspect;
++    g_crt = crt_on;
++}
+ 
+ namespace {
+ using gpu::Context;
+@@ -170,6 +187,70 @@ float4 aa(O i) : SV_Target {
+ }
+ )";
+ 
++// The final picture as a 4:3 CRT showed the console's 640 x 480: drawn at the output's resolution into the picture's
++// viewport (uv is over it). p0 = viewport size in pixels, scanlines, softness; p1 = mask, curve, gamma ramp on.
++// Light is mixed in linear space: each console line is a beam, wider where it is brighter, with dark gaps between the
++// lines and a soft horizontal edge, as the electron beam draws it on a screen whose pixels are not squares.
++const char* kCrtHlsl = R"(
++cbuffer P : register(b1) { float4 p0; float4 p1; };
++Texture2D src0 : register(t0);
++Texture2D lut : register(t3);
++SamplerState ls : register(s0);
++SamplerState ps : register(s1);
++struct O { float4 p : SV_Position; float2 uv : TEXCOORD0; };
++O vs(uint id : SV_VertexID) {
++    O o;
++    o.uv = float2((id << 1) & 2, id & 2);
++    o.p = float4(o.uv * float2(2, -2) + float2(-1, 1), 0, 1);
++    return o;
++}
++static const float kCols = 640.0, kLines = 480.0;
++float3 Lin(float3 c) { return pow(max(c, 0), 2.4); }
++float4 crt(O i) : SV_Target {
++    float scan = p0.z, soft = p0.w, mask = p1.x, curve = p1.y;
++    float2 s = i.uv * 2 - 1;
++    float k = curve * 0.15;
++    float2 d = s * (1 + k * s.yx * s.yx);  // glass bulging out: the corners reach past the picture
++    float2 uv = d * 0.5 + 0.5;
++    float2 out_of = abs(d) - 1;
++    float inside = curve > 0 ? 1 - smoothstep(-0.012, 0.0, max(out_of.x, out_of.y)) : 1;
++    if (inside <= 0) return float4(0, 0, 0, 1);
++
++    float y = uv.y * kLines;
++    float line_id = floor(y);
++    float f = y - line_id;
++    float vy = (line_id + 0.5) / kLines;
++
++    // the beam across the line: gaussian over half console pixel taps
++    float sg = lerp(0.35, 0.9, soft);
++    float3 sum = 0;
++    float ws = 0;
++    [unroll] for (int t = -3; t <= 3; t++) {
++        float o = t * 0.5;
++        float w = exp(-o * o / (2 * sg * sg));
++        sum += w * Lin(src0.SampleLevel(ls, float2(uv.x + o / kCols, vy), 0).rgb);
++        ws += w;
++    }
++    float3 c = sum / ws;
++
++    float lum = max(c.r, max(c.g, c.b));
++    float sigma = lerp(0.28, 0.55, saturate(lum));
++    float dy = f - 0.5;
++    float beam = exp(-dy * dy / (2 * sigma * sigma)) / lerp(0.65, 0.88, saturate(lum));  // the line's mean is 1
++    c *= lerp(1, beam, scan);
++
++    // the phosphor triads: every third column lit red, green and blue, the mean light kept
++    int ph = (int)fmod(i.p.x, 3);
++    float3 oh = float3(ph == 0, ph == 1, ph == 2);
++    c *= lerp(1, 0.5 + 1.5 * oh, mask);
++
++    c *= 1 - curve * 0.3 * dot(s, s) * 0.5;  // the glass is darker towards the corners
++    c = pow(saturate(c), 1 / 2.4) * inside;
++    if (p1.z > 0.5) c = float3(lut.Sample(ps, float2(c.r, 0.5)).r, lut.Sample(ps, float2(c.g, 0.5)).g, lut.Sample(ps, float2(c.b, 0.5)).b);
++    return float4(c, 1);
++}
++)";
++
+ // Soft shadows take a 4 x 4 grid of the sampler's own four texel compares; ext.x carries the setting, so it changes
+ // without new shaders.
+ struct ShadowHooks final : gpu::ShaderHooks {
+@@ -184,6 +265,25 @@ struct ShadowHooks final : gpu::ShaderHooks {
+         [unroll] for (int x = 0; x < 4; x++) sum += t.SampleCmpLevelZero(s, uv + (float2(x, y) - 1.5) * st, r);
+     return (sum / 16).xxxx;
+ }
++)";
++    }
++
++    // A wider picture than the target's 4:3 (ext.z is 4/3 over its aspect, 0 for a draw that keeps it): everything is drawn
++    // narrower about the middle, and the stretch to the screen widens it back, with more of the world at the sides. The
++    // screen space quads (w is 1) follow ext.w, Extension::Anchor: 1 and 2 keep a corner, 3 covers the whole width, otherwise
++    // those that touch an edge, fades and backgrounds, cover it.
++    std::string Position() const override {
++        return R"(    if (ext.z > 0 && ext.z < 1) {
++        bool ui = abs(p.w - 1) < 1e-3;
++        if (ui && ext.w > 2.5) {
++        } else if (ui && ext.w > 1.5) {
++            p.x = surf.x - (surf.x - p.x) * ext.z;
++        } else if (ui && ext.w > 0.5) {
++            p.x *= ext.z;
++        } else if (!(ui && (p.x <= 0.5 || p.x >= surf.x - 0.5))) {
++            p.x = surf.x * 0.5 + (p.x - surf.x * 0.5) * ext.z;
++        }
++    }
+ )";
+     }
+ };
+@@ -204,9 +304,72 @@ public:
+ 
+     const gpu::ShaderHooks* Shaders() const override { return &hooks_; }
+ 
++    void BeginDraw(const State& s) override {
++        vs_ = s.vs_handle;
++        zw_ = s.simple[kMZWriteEnable >> 2] != 0;
++    }
++
++    void Geometry(const float* box, bool lines, bool tilted) override {
++        has_box_ = box != nullptr;
++        lines_ = lines;
++        tilted_ = tilted;
++        if (box) std::memcpy(box_, box, sizeof box_);
++    }
++
++    bool SplitQuads(const State& s) override { return Pretransformed(s.vs_handle) && !(s.simple[kMZWriteEnable >> 2] != 0) && Squeeze() > 0; }
++
+     void Constants(float (*)[4], float* ext, const Target* rt, uint32_t) override {
+         ext[0] = soft_shadows ? 1.0f : 0.0f;
+         ext[1] = ssao_debug == 4 && rt ? rt->w * 0.5f : 0.0f;  // the right half only, for a same frame comparison
++        bool main = rt && rt->gw == gw_ && rt->gh == gh_;  // the game's picture, not its offscreen targets
++        ext[2] = main ? Squeeze() : 0.0f;
++        ext[3] = main && ext[2] > 0 && ui_ ? Anchor() : 0.0f;
++        squeeze_ = ext[2];
++        clip_mode_ = ui_ ? int(ext[3]) : 0;  // Position anchors 2D draws only
++    }
++
++    // the viewport and scissor follow the vertices
++    void Clip(float& x0, float& x1, float w) override {
++        if (!(squeeze_ > 0 && squeeze_ < 1) || clip_mode_ == 3) return;
++        auto move = [&](float x) {
++            if (clip_mode_ == 1) return x * squeeze_;
++            if (clip_mode_ == 2) return w - (w - x) * squeeze_;
++            return x <= 0 || x >= w ? x : w * 0.5f + (x - w * 0.5f) * squeeze_;
++        };
++        x0 = move(x0);
++        x1 = move(x1);
++    }
++
++    // Where a 2D draw sits on the 4:3 picture, from the extent of its vertices (screen pixels, the HUD is drawn
++    // pretransformed): 3 across its whole width, 1 and 2 wholly in a left or right column, 0 anywhere else, which stays
++    // about the middle. The radar and the health keep their corners of the wider picture; the crosshair, the lock-on
++    // brackets and messages stay where they are. Only over the 3D world: a menu is one panel and stays together.
++    float Anchor() {
++        if (!world_ || !has_box_) return 0.0f;
++        float w = float(gw_);
++        if (box_[2] - box_[0] >= 0.85f * w) return 3.0f;
++        if (box_[2] <= 0.42f * w) return 1.0f;
++        if (box_[0] >= 0.58f * w) return 2.0f;
++        return 0.0f;
++    }
++
++    // D3DFVF XYZRHW handles: the HUD and the menus are drawn pretransformed
++    static bool Pretransformed(uint32_t vs) { return !(vs & 1) && (vs & 0xE) == 0x4; }
++
++    // the width of the 4:3 target's picture over the width of the shown one: 1 for 4:3
++    static float Squeeze() {
++        float a = g_aspect;
++        return a > 4.0f / 3.0f + 0.01f ? (4.0f / 3.0f) / a : 0.0f;
++    }
++
++    bool Display(Context& c, ID3D12Resource* src, DXGI_FORMAT fmt, const D3D12_VIEWPORT& vp) override {
++        if (!g_crt) return false;
++        ID3D12Resource* s[3] = {src, nullptr, nullptr};
++        DXGI_FORMAT f[3] = {fmt, kBgra, kBgra};
++        float p[8] = {vp.Width,          vp.Height,         crt_scanlines / 100.0f, crt_softness / 100.0f,
++                      crt_mask / 100.0f, crt_curve / 100.0f, c.Gamma() ? 1.0f : 0.0f, 0};
++        c.Pass(kCrtHlsl, "crt", kBgra, {}, 0, 0, s, f, p, -1);
++        return true;
+     }
+ 
+     // the sun's shadow map: a square depth target (256 x 256 here) drawn with a colour target of its size
+@@ -225,6 +388,15 @@ public:
+         if (!rt) return false;
+         uint32_t gw, gh;
+         c.GuestSize(gw, gh);
++        gw_ = gw;
++        gh_ = gh;
++        if (frame != frame_world_) {
++            frame_world_ = frame;
++            world_ = false;
++        }
++        pre_ = pre;
++        ui_ = pre;
++        if (rt->gw == gw && rt->gh == gh && !ui_) world_ = true;
+         bool scene = ds && rt->gw == gw && rt->gh == gh && ds->w == rt->w && ds->h == rt->h;
+         if (!ssao || done_) return false;
+         bool decal = s.rs[gpu::kRsZBias] != 0;  // the character shadows are drawn between the opaque draws
+@@ -313,7 +485,8 @@ private:
+         DXGI_FORMAT fmt[3] = {kDepthRead, kBgra, kBgra};
+         // the game's view over a 4:3 picture (focal length 496 px at 640 x 480); the occlusion fades out from 1500 to
+         // 2400 units, and the radius is in world units too (a character is about 100 of them)
+-        float p[8] = {1.0f / w, 1.0f / h, 0.645f, 0.4839f, ssao_radius / 25.0f, ssao_strength / 100.0f, 1500, 2400};
++        float sq = Squeeze() > 0 ? Squeeze() : 1.0f;  // a wider picture sees more to the sides
++        float p[8] = {1.0f / w, 1.0f / h, 0.645f / sq, 0.4839f, ssao_radius / 25.0f, ssao_strength / 100.0f, 1500, 2400};
+         c.Pass(kAoHlsl, "ao", kAoFormat, Rtv(0), w, h, src, fmt, p, -1);
+         for (int axis = 0; axis < 2; axis++) {
+             int from = axis, to = 1 - axis;
+@@ -337,6 +510,14 @@ private:
+     }
+ 
+     uint64_t frame_ = ~0ull;
++    uint32_t gw_ = 0, gh_ = 0;  // the game's back buffer
++    float box_[4] = {};         // the current draw's vertex extent, Geometry
++    bool has_box_ = false, lines_ = false, zw_ = false, tilted_ = false, pre_ = false, ui_ = false;
++    uint32_t vs_ = 0;
++    float squeeze_ = 0;         // the current draw's ext.z and anchor, for Clip
++    int clip_mode_ = 0;
++    bool world_ = false;        // a draw other than the 2D quads has been made to the picture this frame
++    uint64_t frame_world_ = ~0ull;
+     uint32_t shadow_made_ = 0;
+     ShadowHooks hooks_;
+     static constexpr uint32_t kShadowMin = 128, kShadowMax = 1024;  // the game's own shadow map sizes
+@@ -361,3 +542,17 @@ const bool g_registered = [] {
+ }  // namespace
+ 
+ }  // namespace enhance
++
++// The game's culling frustum (the planes of a camera, built at 0x381B0 from the aspect of the camera's rectangle, ints at
++// +0x9C and +0xA0) is 4:3: on a wider picture the terrain and objects at the sides would be dropped. The rectangle is as wide
++// as the picture only while the planes are made; the projection stays the game's, the position hook widens it.
++X86_EXTERN_FUNC(__imp__sub_000381B0);
++X86_FUNC(sub_000381B0) {
++    constexpr uint32_t kRectWidth = 0x9C;
++    uint32_t camera = ctx.ecx;
++    int32_t width = int32_t(X86_MEM32(camera + kRectWidth));
++    float wide = std::max(1.0f, enhance::g_aspect.load() * 0.75f);
++    X86_MEM32(camera + kRectWidth) = uint32_t(std::lround(width * wide));
++    __imp__sub_000381B0(ctx, base);
++    X86_MEM32(camera + kRectWidth) = uint32_t(width);
++}
+diff --git a/src/common/enhance.h b/src/common/enhance.h
+index 769a012..7169eb7 100644
+--- a/src/common/enhance.h
++++ b/src/common/enhance.h
+@@ -13,4 +13,15 @@ extern uint32_t ssao_radius;    // hundredths of a world unit
+ extern uint32_t ssao_debug;     // settings file only: 2 shows the occlusion alone, 3 compares with and without (SSAO, AA), 4 the soft shadows
+ extern uint32_t shadow_scale;   // shadow map size as a multiple of the game's 256: 2, 4 or 8; 0 leaves it to the render scale
+ 
++// The CRT look of the original rendering: scanlines, a softer beam, a phosphor mask and a curved glass, each in percent
++extern bool crt;
++extern uint32_t crt_scanlines;
++extern uint32_t crt_softness;
++extern uint32_t crt_mask;
++extern uint32_t crt_curve;
++
++// Each frame from the F8 code: the aspect ratio the picture is shown in (the 3D picture and the HUD are drawn narrower
++// than the 4:3 target for a wider one, which the stretch to the screen puts right) and whether the CRT look is on.
++void SetDisplay(float aspect, bool crt_on);
++
+ }  // namespace enhance
+diff --git a/src/common/graphics.cpp b/src/common/graphics.cpp
+index 489a917..5febeb8 100644
+--- a/src/common/graphics.cpp
++++ b/src/common/graphics.cpp
+@@ -18,6 +18,7 @@ namespace graphics {
+ uint32_t game_fps = 30;
+ bool original = false;
+ uint32_t kept[7] = {0, 0, 0, 0, 0, 100, 30};
++uint32_t aspect = kAuto;
+ 
+ namespace {
+ 
+@@ -91,6 +92,29 @@ constexpr Choice kFpsCaps[] = {{0, "Unlimited"}, {app::kFpsCapRefresh, "Monitor
+                                {60, "60"},       {90, "90"},                                    {120, "120"},
+                                {144, "144"},     {165, "165"},                                  {240, "240"}};
+ constexpr Choice kAniso[] = {{0, "As the game asks"}, {2, "2x"}, {4, "4x"}, {8, "8x"}, {16, "16x"}};
++constexpr Choice kAspects[] = {{kAuto, "Match the display"}, {k43, "4:3 (as the console)"}, {k169, "16:9"}, {k219, "21:9"}};
++
++// width over height of the shown picture: original rendering is the console's 4:3; the display's own shape is kept between
++// 4:3 and 21:9, a narrower one gets bars
++float PictureAspect() {
++    if (original) return 4.0f / 3.0f;
++    switch (aspect) {
++        case k43: return 4.0f / 3.0f;
++        case k169: return 16.0f / 9.0f;
++        case k219: return 21.0f / 9.0f;
++        default: break;
++    }
++    app::Mode out = app::CachedOutput();
++    if (!out.width || !out.height) return 16.0f / 9.0f;
++    return std::clamp(float(out.width) / float(out.height), 4.0f / 3.0f, 21.0f / 9.0f);
++}
++
++void ApplyAspect() {
++    float a = PictureAspect();
++    app::g_aspect = a;
++    app::g_native_render = original;  // the console's 640 x 480, which the CRT pass then scales up
++    enhance::SetDisplay(a, original && enhance::crt);
++}
+ 
+ struct Resolution {
+     uint32_t w, h;
+@@ -136,10 +160,16 @@ void Defaults(app::Settings& s) {
+     s.vsync = true;
+     s.aniso = 0;
+     game_fps = 30;
++    aspect = kAuto;
+     enhance::aa = enhance::ssao = enhance::soft_shadows = false;
+     enhance::ssao_strength = 100;
+     enhance::ssao_radius = 1000;
+     enhance::shadow_scale = 0;
++    enhance::crt = true;
++    enhance::crt_scanlines = 60;
++    enhance::crt_softness = 50;
++    enhance::crt_mask = 30;
++    enhance::crt_curve = 0;
+ }
+ 
+ void Panel(double fps) {
+@@ -152,10 +182,16 @@ void Panel(double fps) {
+         SetOriginal(s, on);
+         save = display = true;
+     }
+-    Tip("The game as the console drew it: no anti-aliasing, ambient occlusion, anisotropic filtering or render scale.\n"
++    Tip("The game as the console drew it: 4:3 on a CRT, with no anti-aliasing, ambient occlusion, anisotropic filtering or render scale.\n"
+         "Your other choices are kept and come back when this is switched off.");
+ 
+     if (ImGui::CollapsingHeader("Display", ImGuiTreeNodeFlags_DefaultOpen)) {
++        ImGui::BeginDisabled(original);
++        if (Pick("Aspect ratio", aspect, kAspects, std::size(kAspects))) save = true;
++        ImGui::EndDisabled();
++        Tip("A wide picture shows more of the world at the sides, not a stretched one.\n"
++            "The 3D view fills the width; the HUD keeps its corners and the menus stay at 4:3 proportions in the middle.\n"
++            "Original rendering is always 4:3, with bars at the sides of a wider screen.");
+         uint32_t mode = uint32_t(s.display_mode);
+         if (Pick("Window mode", mode, kModes, std::size(kModes))) {
+             s.display_mode = app::DisplayMode(mode);
+@@ -187,15 +223,35 @@ void Panel(double fps) {
+         ImGui::EndDisabled();
+         Tip("The 3D picture's size against the output. Under 100% is faster, over 100% is supersampled.");
+         app::Mode out = app::Output();
+-        ImGui::TextDisabled("Renders %u lines, shown at %u x %u", unsigned(out.height * s.render_percent / 100), out.width,
+-                            out.height);
++        ImGui::TextDisabled("Renders %u lines, shown at %u x %u", unsigned(original ? 480 : out.height * s.render_percent / 100),
++                            out.width, out.height);
+         save |= ImGui::Checkbox("Vertical sync", &s.vsync);
+     }
+ 
++    if (original && ImGui::CollapsingHeader("CRT look", ImGuiTreeNodeFlags_DefaultOpen)) {
++        save |= ImGui::Checkbox("CRT filter", &enhance::crt);
++        Tip("The picture as a 4:3 television showed it: its scanlines, soft beam and phosphor dots.");
++        ImGui::BeginDisabled(!enhance::crt);
++        auto slider = [&](const char* label, uint32_t& v, const char* tip) {
++            int i = int(v);
++            if (ImGui::SliderInt(label, &i, 0, 100, "%d%%")) v = uint32_t(i);
++            if (ImGui::IsItemDeactivatedAfterEdit()) save = true;
++            Tip(tip);
++        };
++        slider("Scanlines", enhance::crt_scanlines, "The dark gaps between the console's 480 lines.");
++        slider("Beam softness", enhance::crt_softness, "How far a pixel's light bleeds sideways: a CRT's pixels are not sharp squares.");
++        slider("Phosphor mask", enhance::crt_mask, "The red, green and blue dots of the screen. Shows best at 1440 lines and up.");
++        slider("Curved glass", enhance::crt_curve, "Bends the picture's edges and darkens the corners.");
++        ImGui::EndDisabled();
++    }
++
+     if (ImGui::CollapsingHeader("Frame rate", ImGuiTreeNodeFlags_DefaultOpen)) {
++        ImGui::BeginDisabled(original);
+         if (Pick("Display limit", s.fps_cap, kFpsCaps, std::size(kFpsCaps))) save = true;
++        ImGui::EndDisabled();
+         Tip("The most frames shown per second. MechAssault steps its game logic and sound once per frame shown, at 30,\n"
+-            "so anything above 30 speeds the game up and distorts the sound until the engine's frame timer is found.");
++            "so anything above 30 speeds the game up and distorts the sound until the engine's frame timer is found.\n"
++            "Original rendering is always 30.");
+         ImGui::TextDisabled("Now %.0f FPS", fps);
+     }
+ 
+@@ -243,6 +299,7 @@ bool Open() { return g_open; }
+ 
+ void Ui(double fps) {
+     ApplyGameFps();
++    ApplyAspect();
+     if (ImGui::IsKeyPressed(ImGuiKey_F8, false)) g_open = !g_open;
+     if (!g_open) return;
+     if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+diff --git a/src/common/graphics.h b/src/common/graphics.h
+index 68375d4..09d64bb 100644
+--- a/src/common/graphics.h
++++ b/src/common/graphics.h
+@@ -12,6 +12,10 @@ extern uint32_t game_fps;  // the engine's own frame limit, 30 as the console ra
+ extern bool original;
+ extern uint32_t kept[7];  // anti-aliasing, SSAO, soft shadows, shadow map size, anisotropic filtering, render %, game fps
+ 
++// The picture's aspect ratio: 0 follows the display, else one of Aspect's; original rendering is always 4:3
++enum Aspect : uint32_t { kAuto = 0, k43 = 1, k169 = 2, k219 = 3 };
++extern uint32_t aspect;
++
+ void Ui(double fps);  // inside the ImGui frame
+ bool Open();
+ 
