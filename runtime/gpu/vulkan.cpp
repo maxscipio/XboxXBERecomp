@@ -104,15 +104,38 @@ float4 psmain(O i) : SV_Target {
     if (opts.x > 0) c.rgb = float3(lut.Sample(ps, float2(c.r, 0.5)).r, lut.Sample(ps, float2(c.g, 0.5)).g, lut.Sample(ps, float2(c.b, 0.5)).b);
     return float4(c.rgb, opts.y > 0 ? c.a : 1);
 }
-// the finished frame, the settings' passes in one: opts.y 1 for FXAA, opts.z the sharpening 0 to 1. FXAA: where the
-// luma of a pixel and its four neighbours differs enough to be an edge, the colour is averaged along the edge's
-// direction, found from the diagonal neighbours. Sharpening, contrast adaptive (as AMD's CAS): the pixel less its
-// neighbours, weighted down where they already span much of the range, so strong edges get no halos; a source pixel or
-// an output pixel apart, whichever is larger, so it still shows on a frame rendered above the screen's
+// the finished frame, the settings' passes in one: opts.y bit 0 for FXAA, bit 1 for the sharp scaling filter, opts.z the
+// sharpening 0 to 1. The filter: Catmull-Rom over source pixels going up; going down, the output pixel's area (four
+// taps, even at a ratio that is not whole) less a little of its neighbours. FXAA: where the luma of a pixel and its
+// four neighbours differs enough to be an edge, the colour is averaged along the edge's direction, found from the
+// diagonal neighbours. Sharpening, contrast adaptive (as AMD's CAS): the pixel less its neighbours, weighted down
+// where they already span much of the range, so strong edges get no halos; a source pixel or an output pixel apart,
+// whichever is larger, so it still shows on a frame rendered above the screen's
 float luma(float3 c) { return dot(c, float3(0.299, 0.587, 0.114)); }
 float3 tap(float2 uv) { return img.SampleLevel(ls, uv, 0).rgb; }
-float3 fxaa(float2 uv, float2 t) {
-    float3 m = tap(uv);
+float3 scaled(float2 uv, float2 t, float2 px) {
+    float2 r = px / t;
+    if (abs(r.x - 1) < 0.01 && abs(r.y - 1) < 0.01) return tap(uv);
+    float3 c = 0;
+    if (r.x > 1 || r.y > 1) {
+        float2 stride = max(t, px);
+        c = 0.25 * (tap(uv + stride * float2(-0.25, -0.25)) + tap(uv + stride * float2(0.25, -0.25)) +
+                    tap(uv + stride * float2(-0.25, 0.25)) + tap(uv + stride * float2(0.25, 0.25)));
+        float3 ring = tap(uv + float2(stride.x, 0)) + tap(uv - float2(stride.x, 0)) + tap(uv + float2(0, stride.y)) + tap(uv - float2(0, stride.y));
+        c = c * 1.32 - ring * 0.08;
+        return saturate(c);
+    }
+    float2 p = uv / t - 0.5, b = floor(p), f = p - b;
+    float2 w0 = f * (-0.5 + f * (1 - 0.5 * f)), w1 = 1 + f * f * (-2.5 + 1.5 * f);
+    float2 w2 = f * (0.5 + f * (2 - 1.5 * f)), w3 = f * f * (-0.5 + 0.5 * f);
+    float2 w12 = w1 + w2;
+    float2 p0 = (b - 0.5) * t, p12 = (b + 0.5 + w2 / w12) * t, p3 = (b + 2.5) * t;
+    c += w0.x * w0.y * tap(float2(p0.x, p0.y)) + w12.x * w0.y * tap(float2(p12.x, p0.y)) + w3.x * w0.y * tap(float2(p3.x, p0.y));
+    c += w0.x * w12.y * tap(float2(p0.x, p12.y)) + w12.x * w12.y * tap(float2(p12.x, p12.y)) + w3.x * w12.y * tap(float2(p3.x, p12.y));
+    c += w0.x * w3.y * tap(float2(p0.x, p3.y)) + w12.x * w3.y * tap(float2(p12.x, p3.y)) + w3.x * w3.y * tap(float2(p3.x, p3.y));
+    return saturate(c);
+}
+float3 fxaa(float3 m, float2 uv, float2 t) {
     float lm = luma(m);
     float ln = luma(tap(uv + float2(0, -t.y))), ls_ = luma(tap(uv + float2(0, t.y)));
     float le = luma(tap(uv + float2(t.x, 0))), lw = luma(tap(uv + float2(-t.x, 0)));
@@ -142,7 +165,9 @@ float4 psfinal(O i) : SV_Target {
     img.GetDimensions(size.x, size.y);
     float2 t = 1 / size;
     float2 px = max(t, fwidth(i.uv));
-    float3 c = opts.y > 0 ? fxaa(i.uv, t) : tap(i.uv);
+    int mode = (int)opts.y;
+    float3 c = (mode & 2) != 0 ? scaled(i.uv, t, fwidth(i.uv)) : tap(i.uv);
+    if ((mode & 1) != 0) c = fxaa(c, i.uv, t);
     if (opts.z > 0) c = sharpen(c, i.uv, px, opts.z);
     c *= opts.w;
     if (opts.x > 0) c = float3(lut.Sample(ps, float2(c.r, 0.5)).r, lut.Sample(ps, float2(c.g, 0.5)).g, lut.Sample(ps, float2(c.b, 0.5)).b);
@@ -2286,13 +2311,14 @@ Img VulkanBackend::MakePixelTexture(const std::vector<uint8_t>& px, uint32_t pit
 // src, in its read layout, drawn over the pass's viewport
 void VulkanBackend::Blit(const Img& src, const float uvrect[4], const BlitOptions& o) {
     const app::Settings& st = app::Get();
-    const bool final = o.final && (st.fxaa || st.sharpen);
+    const bool final = o.final && (st.fxaa || st.smaa || st.sharpen || st.scale_filter);
     VkPipeline pso = EnsureFullscreenPipeline(kBlitHlsl, 0xF, o.over, 0, final ? "psfinal" : "psmain");
     if (!pso && final) pso = EnsureFullscreenPipeline(kBlitHlsl, 0xF, o.over, 0);  // a shader that failed: the plain blit
     if (!pso) return;
     float c[8] = {uvrect[0], uvrect[1], uvrect[2], uvrect[3], o.gamma ? 1.0f : 0.0f, o.alpha ? 1.0f : 0.0f,
                   float(o.taps), o.mul};
-    if (final) c[5] = st.fxaa ? 1.0f : 0.0f, c[6] = float(std::min<uint32_t>(st.sharpen, 100)) / 100.0f;
+    // SMAA is Direct3D 12 only: FXAA stands in for it here
+    if (final) c[5] = float((st.fxaa || st.smaa ? 1 : 0) | (st.scale_filter ? 2 : 0)), c[6] = float(std::min<uint32_t>(st.sharpen, 100)) / 100.0f;
     FullScreen(pso, &src, &lut_, blit_linear_, blit_point_, c, sizeof(c));
 }
 
