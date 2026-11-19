@@ -31,6 +31,10 @@ struct Settings {
     uint32_t aspect = 0;             // 0 from the output's shape, 1 4:3, 2 16:9, 3 fill the screen (kAspects)
     uint32_t msaa = 0;               // 0 none, 1 2 3 MSAA 2x 4x 8x on the scene (kMsaa)
     bool fxaa = false;               // FXAA on the finished frame
+    bool smaa = false;               // SMAA on the finished frame, in place of FXAA
+    uint32_t scale_filter = 0;       // the frame to the screen's size: 0 bilinear, 1 sharp (Catmull-Rom)
+    bool alpha_coverage = false;     // with MSAA, alpha tested edges (fences, leaves) get partial coverage
+    bool low_latency = false;        // a waitable swap chain holding one frame, at the next start
     uint32_t sharpen = 0;            // percent, contrast adaptive sharpening of the finished frame
     uint32_t audio_output = 0;         // audio::kOutputAuto, Stereo, Surround or Mono
     std::string join_ip;                   // co-op: a host past the LAN the system link search also asks

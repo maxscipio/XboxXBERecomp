@@ -61,6 +61,10 @@ void Load() {
     for (uint32_t i = 0; i < kMsaaCount; i++)
         if (msaa == kMsaa[i]) s.msaa = i;
     s.fxaa = t["fxaa"].value_or(s.fxaa);
+    s.smaa = t["smaa"].value_or(s.smaa);
+    s.scale_filter = std::min<uint32_t>(t["scale_filter"].value_or(s.scale_filter), 1);
+    s.alpha_coverage = t["alpha_coverage"].value_or(s.alpha_coverage);
+    s.low_latency = t["low_latency"].value_or(s.low_latency);
     s.sharpen = std::min<uint32_t>(t["sharpen"].value_or(s.sharpen), 100);
     s.join_ip = t["join_ip"].value_or(s.join_ip);
     s.audio_output = std::min(t["audio_output"].value_or(s.audio_output), audio::kOutputMono);
@@ -98,6 +102,10 @@ toml::table Table() {
                   {"aspect", kAspects[std::min(s.aspect, kAspectCount - 1)]},
                   {"msaa", kMsaa[std::min(s.msaa, kMsaaCount - 1)]},
                   {"fxaa", s.fxaa},
+                  {"smaa", s.smaa},
+                  {"scale_filter", int64_t(s.scale_filter)},
+                  {"alpha_coverage", s.alpha_coverage},
+                  {"low_latency", s.low_latency},
                   {"sharpen", int64_t(s.sharpen)},
                   {"join_ip", s.join_ip},
                   {"audio_output", int64_t(s.audio_output)},

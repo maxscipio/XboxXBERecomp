@@ -39,6 +39,7 @@
 #include "gpu/backend.h"
 #include "gpu/ext.h"
 #include "gpu/shaders.h"
+#include "gpu/smaa.h"
 #include "gpu/texture.h"
 #include "gpu/texturedumper.h"
 #include "gpu/ui.h"
@@ -158,15 +159,38 @@ float4 psmain(O i) : SV_Target {
     if (opts.x > 0) c.rgb = float3(lut.Sample(ps, float2(c.r, 0.5)).r, lut.Sample(ps, float2(c.g, 0.5)).g, lut.Sample(ps, float2(c.b, 0.5)).b);
     return float4(c.rgb, opts.y > 0 ? c.a : 1);
 }
-// the finished frame, the settings' passes in one: opts.y 1 for FXAA, opts.z the sharpening 0 to 1. FXAA: where the
-// luma of a pixel and its four neighbours differs enough to be an edge, the colour is averaged along the edge's
-// direction, found from the diagonal neighbours. Sharpening, contrast adaptive (as AMD's CAS): the pixel less its
-// neighbours, weighted down where they already span much of the range, so strong edges get no halos; a source pixel or
-// an output pixel apart, whichever is larger, so it still shows on a frame rendered above the screen's
+// the finished frame, the settings' passes in one: opts.y bit 0 for FXAA, bit 1 for the sharp scaling filter, opts.z the
+// sharpening 0 to 1. The filter: Catmull-Rom over source pixels going up; going down, the output pixel's area (four
+// taps, even at a ratio that is not whole) less a little of its neighbours. FXAA: where the luma of a pixel and its
+// four neighbours differs enough to be an edge, the colour is averaged along the edge's direction, found from the
+// diagonal neighbours. Sharpening, contrast adaptive (as AMD's CAS): the pixel less its neighbours, weighted down
+// where they already span much of the range, so strong edges get no halos; a source pixel or an output pixel apart,
+// whichever is larger, so it still shows on a frame rendered above the screen's
 float luma(float3 c) { return dot(c, float3(0.299, 0.587, 0.114)); }
 float3 tap(float2 uv) { return img.SampleLevel(ls, uv, 0).rgb; }
-float3 fxaa(float2 uv, float2 t) {
-    float3 m = tap(uv);
+float3 scaled(float2 uv, float2 t, float2 px) {
+    float2 r = px / t;
+    if (abs(r.x - 1) < 0.01 && abs(r.y - 1) < 0.01) return tap(uv);
+    float3 c = 0;
+    if (r.x > 1 || r.y > 1) {
+        float2 stride = max(t, px);
+        c = 0.25 * (tap(uv + stride * float2(-0.25, -0.25)) + tap(uv + stride * float2(0.25, -0.25)) +
+                    tap(uv + stride * float2(-0.25, 0.25)) + tap(uv + stride * float2(0.25, 0.25)));
+        float3 ring = tap(uv + float2(stride.x, 0)) + tap(uv - float2(stride.x, 0)) + tap(uv + float2(0, stride.y)) + tap(uv - float2(0, stride.y));
+        c = c * 1.32 - ring * 0.08;
+        return saturate(c);
+    }
+    float2 p = uv / t - 0.5, b = floor(p), f = p - b;
+    float2 w0 = f * (-0.5 + f * (1 - 0.5 * f)), w1 = 1 + f * f * (-2.5 + 1.5 * f);
+    float2 w2 = f * (0.5 + f * (2 - 1.5 * f)), w3 = f * f * (-0.5 + 0.5 * f);
+    float2 w12 = w1 + w2;
+    float2 p0 = (b - 0.5) * t, p12 = (b + 0.5 + w2 / w12) * t, p3 = (b + 2.5) * t;
+    c += w0.x * w0.y * tap(float2(p0.x, p0.y)) + w12.x * w0.y * tap(float2(p12.x, p0.y)) + w3.x * w0.y * tap(float2(p3.x, p0.y));
+    c += w0.x * w12.y * tap(float2(p0.x, p12.y)) + w12.x * w12.y * tap(float2(p12.x, p12.y)) + w3.x * w12.y * tap(float2(p3.x, p12.y));
+    c += w0.x * w3.y * tap(float2(p0.x, p3.y)) + w12.x * w3.y * tap(float2(p12.x, p3.y)) + w3.x * w3.y * tap(float2(p3.x, p3.y));
+    return saturate(c);
+}
+float3 fxaa(float3 m, float2 uv, float2 t) {
     float lm = luma(m);
     float ln = luma(tap(uv + float2(0, -t.y))), ls_ = luma(tap(uv + float2(0, t.y)));
     float le = luma(tap(uv + float2(t.x, 0))), lw = luma(tap(uv + float2(-t.x, 0)));
@@ -196,7 +220,9 @@ float4 psfinal(O i) : SV_Target {
     img.GetDimensions(size.x, size.y);
     float2 t = 1 / size;
     float2 px = max(t, fwidth(i.uv));
-    float3 c = opts.y > 0 ? fxaa(i.uv, t) : tap(i.uv);
+    int mode = (int)opts.y;
+    float3 c = (mode & 2) != 0 ? scaled(i.uv, t, fwidth(i.uv)) : tap(i.uv);
+    if ((mode & 1) != 0) c = fxaa(c, i.uv, t);
     if (opts.z > 0) c = sharpen(c, i.uv, px, opts.z);
     c *= opts.w;
     if (opts.x > 0) c = float3(lut.Sample(ps, float2(c.r, 0.5)).r, lut.Sample(ps, float2(c.g, 0.5)).g, lut.Sample(ps, float2(c.b, 0.5)).b);
@@ -807,6 +833,9 @@ private:
     void UploadGammaRamp();
     void DrawFrame(Target* t, uint32_t bi);
     void BlitFrame(Target& t, ID3D12Resource* shown, DXGI_FORMAT shown_fmt);
+    bool SmaaFrame(Target& t);  // Settings::smaa: the frame through SMAA's passes into smaa_[2], false when it cannot
+    bool EnsureSmaa(uint32_t w, uint32_t h);
+    ComPtr<ID3D12Resource> SmaaLookup(DXGI_FORMAT fmt, uint32_t w, uint32_t h, const unsigned char* bytes, uint32_t row);
     void DrawOverlay(const Target& frame);
     Tex* OverlayTexture();
     void RenderUi();
@@ -910,6 +939,16 @@ private:
     ComPtr<ID3D12Device> dev_;
     ComPtr<ID3D12CommandQueue> queue_;
     ComPtr<IDXGISwapChain3> swap_;
+    UINT swap_flags_ = 0;
+    HANDLE latency_wait_ = nullptr;  // Settings::low_latency: the swap chain's, waited on after each present
+    // SMAA on the finished frame: edges, weights, the result; its two lookups; the size they were made for
+    struct SmaaPass {
+        ComPtr<ID3D12Resource> res;
+        uint32_t view = 0;
+        D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    } smaa_[3];
+    ComPtr<ID3D12Resource> smaa_area_, smaa_search_;
+    uint32_t smaa_w_ = 0, smaa_h_ = 0;
     ComPtr<ID3D12Resource> bb_[kFrames];
     ComPtr<ID3D12Fence> fence_;
     HANDLE event_ = nullptr;
@@ -1230,7 +1269,9 @@ bool D3D12Backend::CreateSwapChain(HWND hwnd) {
     sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     sd.BufferCount = kFrames;
     sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-    sd.Flags = tearing_ ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
+    swap_flags_ = (tearing_ ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0) |
+                  (app::Get().low_latency ? DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT : 0);
+    sd.Flags = swap_flags_;
     ComPtr<IDXGISwapChain1> sc1;
     if (FAILED(factory_->CreateSwapChainForHwnd(queue_.Get(), hwnd, &sd, nullptr, nullptr, &sc1))) {
         LOGE("d3d12: no swap chain");
@@ -1238,6 +1279,11 @@ bool D3D12Backend::CreateSwapChain(HWND hwnd) {
     }
     factory_->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
     sc1.As(&swap_);
+    if (app::Get().low_latency) {
+        swap_->SetMaximumFrameLatency(1);
+        latency_wait_ = swap_->GetFrameLatencyWaitableObject();
+        LOGI("d3d12: low latency, a frame held");
+    }
     return true;
 }
 
@@ -1864,8 +1910,8 @@ void D3D12Backend::Blit(ID3D12Resource* src, DXGI_FORMAT fmt, const float uvrect
     float c[8] = {uvrect[0], uvrect[1], uvrect[2], uvrect[3],
                   o.gamma ? 1.0f : 0.0f, o.alpha ? 1.0f : 0.0f, float(o.taps), o.mul};
     const app::Settings& st = app::Get();
-    const bool final = o.final && (st.fxaa || st.sharpen);
-    if (final) c[5] = st.fxaa ? 1.0f : 0.0f, c[6] = float(std::min<uint32_t>(st.sharpen, 100)) / 100.0f;
+    const bool final = o.final && (st.fxaa || st.sharpen || st.scale_filter);
+    if (final) c[5] = float((st.fxaa && !st.smaa ? 1 : 0) | (st.scale_filter ? 2 : 0)), c[6] = float(std::min<uint32_t>(st.sharpen, 100)) / 100.0f;
     std::memcpy(cb.cpu, c, sizeof(c));
     ID3D12PipelineState* pso = EnsureBlitPipeline(o.rtv, o.over, final, o.samples);
     if (!pso && final) pso = EnsureBlitPipeline(o.rtv, o.over);  // a shader that failed: the plain blit
@@ -3702,6 +3748,9 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
     if (!BindStageTexturesAndTargets(s, stages)) { CAP_DROP("stagetextures"); return; }
     PixelKey pk = MakePixelKey(s, stages.info);
     pk.quad = sh.quad;
+    // alpha tested, not blended, onto MSAA twins: Settings::alpha_coverage (not quads, whose shader is rewritten)
+    if (app::Get().alpha_coverage && bound_ms_ && !sh.quad && SimpleState(s, kMAlphaTestEnable) && !SimpleState(s, kMBlendEnable))
+        pk.coverage = msaa_;
     sh.pkey = Hash(&pk, sizeof(pk));
     EnsurePixelShader(pk, sh);
     if (!sh.vs_code || !sh.ps_code) { CAP_DROP("shadercode"); return; }
@@ -4077,7 +4126,7 @@ void D3D12Backend::ResizeSwap() {
         if (f.fence) WaitFence(f.fence);
     }
     for (auto& b : bb_) b.Reset();
-    swap_->ResizeBuffers(kFrames, w, h, DXGI_FORMAT_B8G8R8A8_UNORM, tearing_ ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
+    swap_->ResizeBuffers(kFrames, w, h, DXGI_FORMAT_B8G8R8A8_UNORM, swap_flags_);
     CreateBackBufferViews();
     bb_w_ = w;
     bb_h_ = h;
@@ -4142,6 +4191,106 @@ void D3D12Backend::UploadGammaRamp() {
     sl.PlacedFootprint.Offset = a.off;
     sl.PlacedFootprint.Footprint = {DXGI_FORMAT_B8G8R8A8_UNORM, 256, 1, 1, kRampBytes};
     cl_->CopyTextureRegion(&dl, 0, 0, 0, &sl, nullptr);
+}
+
+// a lookup texture of SMAA's, copied in on this frame's list
+ComPtr<ID3D12Resource> D3D12Backend::SmaaLookup(DXGI_FORMAT fmt, uint32_t w, uint32_t h, const unsigned char* bytes, uint32_t row) {
+    D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+    D3D12_RESOURCE_DESC td = Texture2DDesc(fmt, w, h);
+    ComPtr<ID3D12Resource> tex;
+    if (FAILED(dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&tex)))) return nullptr;
+    const uint32_t pitch = (row + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1) & ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1);
+    Alloc a = Upload(uint64_t(pitch) * h + D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
+    if (!a.cpu) return nullptr;
+    for (uint32_t y = 0; y < h; y++) std::memcpy(a.cpu + size_t(y) * pitch, bytes + size_t(y) * row, row);
+    D3D12_TEXTURE_COPY_LOCATION dl{tex.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+    D3D12_TEXTURE_COPY_LOCATION sl{a.res, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
+    sl.PlacedFootprint.Offset = a.off;
+    sl.PlacedFootprint.Footprint = {fmt, w, h, 1, pitch};
+    cl_->CopyTextureRegion(&dl, 0, 0, 0, &sl, nullptr);
+    D3D12_RESOURCE_STATES st = D3D12_RESOURCE_STATE_COPY_DEST;
+    Transition(tex.Get(), st, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    return tex;
+}
+
+bool D3D12Backend::EnsureSmaa(uint32_t w, uint32_t h) {
+    if (!smaa_area_) {
+        smaa_area_ = SmaaLookup(DXGI_FORMAT_R8G8_UNORM, kSmaaAreaWidth, kSmaaAreaHeight, kSmaaArea, kSmaaAreaWidth * 2);
+        smaa_search_ = SmaaLookup(DXGI_FORMAT_R8_UNORM, kSmaaSearchWidth, kSmaaSearchHeight, kSmaaSearch, kSmaaSearchWidth);
+        if (!smaa_area_ || !smaa_search_) {
+            smaa_area_.Reset();
+            smaa_search_.Reset();
+            return false;
+        }
+    }
+    if (smaa_w_ == w && smaa_h_ == h) return true;
+    for (SmaaPass& p : smaa_) {
+        if (p.res) {
+            CurrentFrame().garbage.push_back(p.res);
+            p.res.Reset();
+            free_rtv_.push_back(p.view);
+        }
+    }
+    smaa_w_ = smaa_h_ = 0;
+    D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+    for (SmaaPass& p : smaa_) {
+        D3D12_RESOURCE_DESC td = Texture2DDesc(kBgra, w, h);
+        td.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        p.state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        if (free_rtv_.empty() ||
+            FAILED(dev_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &td, p.state, nullptr, IID_PPV_ARGS(&p.res)))) {
+            LOG_FIRST(4, "d3d12: no SMAA targets at %ux%u", w, h);
+            for (SmaaPass& q : smaa_)
+                if (q.res) q.res.Reset(), free_rtv_.push_back(q.view);
+            return false;
+        }
+        p.view = free_rtv_.back();
+        free_rtv_.pop_back();
+        dev_->CreateRenderTargetView(p.res.Get(), nullptr, Cpu(rtv_heap_.Get(), p.view, rtv_inc_));
+    }
+    smaa_w_ = w;
+    smaa_h_ = h;
+    return true;
+}
+
+bool D3D12Backend::SmaaFrame(Target& t) {
+    if (!EnsureSmaa(t.w, t.h)) return false;
+    const float c[8] = {0, 0, 1, 1, 1.0f / t.w, 1.0f / t.h, float(t.w), float(t.h)};
+    struct View {
+        ID3D12Resource* res;
+        DXGI_FORMAT fmt;
+    };
+    auto pass = [&](const char* vse, const char* pse, SmaaPass& dst, std::initializer_list<View> views) {
+        auto& pso = blit_psos_[Hash(pse, std::strlen(pse), Hash("smaa", 4))];
+        if (!pso) {
+            uint64_t h;
+            ID3DBlob* vs = Compile(kSmaaHlsl, vse, "vs_5_0", h);
+            ID3DBlob* ps = Compile(kSmaaHlsl, pse, "ps_5_0", h);
+            if (!vs || !ps) return false;
+            D3D12_GRAPHICS_PIPELINE_STATE_DESC d = FullScreenPipelineDesc(vs, ps, kBgra);
+            if (FAILED(dev_->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&pso)))) return false;
+        }
+        Transition(dst.res.Get(), dst.state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        SetBlitTarget(Cpu(rtv_heap_.Get(), dst.view, rtv_inc_), t.w, t.h);
+        uint32_t slot = AllocSrvSlots(uint32_t(views.size()));
+        uint32_t i = 0;
+        for (const View& v : views) {
+            D3D12_SHADER_RESOURCE_VIEW_DESC sv{};
+            sv.Format = v.fmt;
+            sv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            sv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            sv.Texture2D.MipLevels = 1;
+            dev_->CreateShaderResourceView(v.res, &sv, Cpu(srv_heap_.Get(), slot + i++, srv_inc_));
+        }
+        Alloc cb = Upload(256, 256);
+        std::memcpy(cb.cpu, c, sizeof(c));
+        DrawFullScreen(pso.Get(), cb.gpu, slot);
+        Transition(dst.res.Get(), dst.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        return true;
+    };
+    return pass("vsedge", "psedge", smaa_[0], {{t.res.Get(), t.fmt}}) &&
+           pass("vsweight", "psweight", smaa_[1], {{smaa_[0].res.Get(), kBgra}, {smaa_area_.Get(), DXGI_FORMAT_R8G8_UNORM}, {smaa_search_.Get(), DXGI_FORMAT_R8_UNORM}}) &&
+           pass("vsblend", "psblend", smaa_[2], {{t.res.Get(), t.fmt}, {smaa_[1].res.Get(), kBgra}});
 }
 
 void D3D12Backend::BlitFrame(Target& t, ID3D12Resource* shown, DXGI_FORMAT shown_fmt) {
@@ -4293,6 +4442,9 @@ void D3D12Backend::DrawFrame(Target* t, uint32_t bi) {
     if (t && ext_) {
         shown_fmt = t->fmt;
         shown = ext_->Present(*this, *t, shown_fmt);
+    } else if (t && app::Get().smaa) {
+        Transition(t->res.Get(), t->state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        if (SmaaFrame(*t)) shown = smaa_[2].res.Get(), shown_fmt = kBgra;
     }
     D3D12_RESOURCE_STATES bs = D3D12_RESOURCE_STATE_PRESENT;
     Transition(bb_[bi].Get(), bs, D3D12_RESOURCE_STATE_RENDER_TARGET);
@@ -4419,6 +4571,7 @@ void D3D12Backend::Present(const Surface& front, bool show) {
         auto perf_swap = PerfClock::now();
         swap_->Present(vsync ? 1 : 0, !vsync && tearing_ ? DXGI_PRESENT_ALLOW_TEARING : 0);
         g_perf.swap += PerfMs(perf_swap);
+        if (latency_wait_) WaitForSingleObjectEx(latency_wait_, 1000, FALSE);
     }
 
     presents_++;

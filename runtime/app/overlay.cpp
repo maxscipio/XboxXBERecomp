@@ -361,10 +361,24 @@ void Graphics(Settings& s) {
     RowValues("Anisotropic filtering", &s.aniso, {{0, "As the game asks"}, {2, "2x"}, {4, "4x"}, {8, "8x"}, {16, "16x"}});
     RowValues("Antialiasing (MSAA)", &s.msaa, {{0, "Off"}, {1, "MSAA 2x"}, {2, "MSAA 4x"}, {3, "MSAA 8x"}},
               "Smooths the edges of the 3D scene at once (Direct3D 12). Render scale above 100% also smooths edges.");
-    RowCheck("FXAA", &s.fxaa, "Smooths the edges of the finished frame, HUD included; a little softer.");
+    RowCheck("Smooth alpha edges", &s.alpha_coverage,
+             "With MSAA on: softens fences, leaves and other cut-out textures, which MSAA alone misses. A dark outline on some is possible.");
+    int edge = s.smaa ? 2 : s.fxaa ? 1 : 0;
+    const char* edge_names[] = {"Off", "FXAA", "SMAA"};
+    if (RowChoice("Edge smoothing", &edge, edge_names, 3,
+                  "On the finished frame, HUD included. SMAA keeps more detail than FXAA and costs a little more.")) {
+        s.fxaa = edge == 1;
+        s.smaa = edge == 2;
+    }
+    int filter = int(s.scale_filter % 2);
+    const char* filter_names[] = {"Bilinear", "Sharp"};
+    if (RowChoice("Scaling filter", &filter, filter_names, 2, "How the frame reaches the screen's size when render scale is not 100%."))
+        s.scale_filter = uint32_t(filter);
     int sharp = int(s.sharpen);
     if (RowSlider("Sharpening", &sharp, 0, 100, 5, "%", "Contrast adaptive sharpening of the finished frame; applies at once."))
         s.sharpen = uint32_t(sharp);
+    RowCheck("Low latency", &s.low_latency,
+             "Applies at the next start. Holds one finished frame instead of several: less input lag, but a slow frame costs more.");
     RowValues("Frame rate cap", &s.fps_cap,
               {{30, "30"}, {60, "60"}, {120, "120"}, {144, "144"}, {240, "240"}, {0, "Unlimited"}, {kFpsCapRefresh, "Monitor refresh rate"}},
               "The game sets its own pace; the cap only limits it further.");
