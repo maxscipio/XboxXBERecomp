@@ -176,6 +176,50 @@ X86Func* Find(uint32_t guest);
 #define SYM_DirectSoundGetSampleTime FFFFFF22
 #define HAS_DirectSoundGetSampleTime 0
 #endif
+#ifndef SYM_IDirectSoundBuffer_PlayEx
+#define SYM_IDirectSoundBuffer_PlayEx FFFFFF25
+#define HAS_IDirectSoundBuffer_PlayEx 0
+#endif
+#ifndef SYM_IDirectSoundBuffer_SetConeAngles
+#define SYM_IDirectSoundBuffer_SetConeAngles FFFFFF26
+#define HAS_IDirectSoundBuffer_SetConeAngles 0
+#endif
+#ifndef SYM_IDirectSoundBuffer_SetConeOutsideVolume
+#define SYM_IDirectSoundBuffer_SetConeOutsideVolume FFFFFF27
+#define HAS_IDirectSoundBuffer_SetConeOutsideVolume 0
+#endif
+#ifndef SYM_IDirectSoundBuffer_SetConeOrientation
+#define SYM_IDirectSoundBuffer_SetConeOrientation FFFFFF28
+#define HAS_IDirectSoundBuffer_SetConeOrientation 0
+#endif
+#ifndef SYM_XAudioSetEffectData
+#define SYM_XAudioSetEffectData FFFFFF29
+#define HAS_XAudioSetEffectData 0
+#endif
+#ifndef SYM_IDirectSoundStream_GetVoiceProperties
+#define SYM_IDirectSoundStream_GetVoiceProperties FFFFFF2A
+#define HAS_IDirectSoundStream_GetVoiceProperties 0
+#endif
+#ifndef SYM_IDirectSoundStream_Set3DVoiceData
+#define SYM_IDirectSoundStream_Set3DVoiceData FFFFFF2B
+#define HAS_IDirectSoundStream_Set3DVoiceData 0
+#endif
+#ifndef SYM_IDirectSoundStream_Use3DVoiceData
+#define SYM_IDirectSoundStream_Use3DVoiceData FFFFFF2C
+#define HAS_IDirectSoundStream_Use3DVoiceData 0
+#endif
+#ifndef SYM_IDirectSoundStream_SetLFO
+#define SYM_IDirectSoundStream_SetLFO FFFFFF2D
+#define HAS_IDirectSoundStream_SetLFO 0
+#endif
+#ifndef SYM_IDirectSoundStream_SetOutputBuffer
+#define SYM_IDirectSoundStream_SetOutputBuffer FFFFFF2E
+#define HAS_IDirectSoundStream_SetOutputBuffer 0
+#endif
+#ifndef SYM_IDirectSoundStream_SetPitch
+#define SYM_IDirectSoundStream_SetPitch FFFFFF2F
+#define HAS_IDirectSoundStream_SetPitch 0
+#endif
 
 namespace {
 
@@ -300,6 +344,9 @@ void Trace(char kind, const Voice& v, uint32_t a, uint32_t b) {
 // IDirectSound_SetMixBinHeadroom: the voice processor halves a bin per step, 1 for every bin but the last by default
 uint8_t g_bin_headroom[kBins] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
                                  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0};
+// the bins' headroom as the library's DirectSoundCreate leaves it (the APU shifts each bin's sum down by it), for a
+// title that has no effects image to set its own
+constexpr float kMixBinGain = 1.0f / float(1u << XDK_DSound_MixBinHeadroom);
 struct Segment {
     uint32_t at;
     uint32_t bytes;
@@ -433,7 +480,7 @@ Gains SlotGains(const Voice& v) {
         for (uint32_t s = k * per; s < (k + 1) * per && s < n; s++) {
             uint32_t b = bin[s];
             float level = Db(v.bin_mb[b]) * v.volume * v.headroom;
-            if (image) level = std::ldexp(level, -g_bin_headroom[b]);
+            level = image ? std::ldexp(level, -g_bin_headroom[b]) : level * kMixBinGain;
             g.bin[ChannelOfSlot(v, k, s)][b] += level;
         }
     }
@@ -849,6 +896,14 @@ void ReadFormat(Voice& v, uint32_t wfx) {
 void SetBins(Voice& v, uint32_t mixbins) {
     v.nbins = 0;  // none listed: front left and right
     if (!mixbins) return;
+    if (XDK_DSound_MixBinMask) {  // a mask, not a DSMIXBINS: each bin set plays at full volume
+        for (uint32_t b = 0; b < 32 && v.nbins < 8; b++)
+            if (mixbins >> b & 1) {
+                v.bin[v.nbins++] = uint8_t(b);
+                v.bin_mb[b] = 0;
+            }
+        return;
+    }
     uint32_t n = std::min<uint32_t>(R32(mixbins), 8), pairs = R32(mixbins + 4);
     for (uint32_t i = 0; i < n; i++) {
         v.bin[i] = R32(pairs + i * 8) & 31;
@@ -1004,7 +1059,12 @@ static void AuditExports() {
         SYM(IDirectSoundBuffer_SetPitch), SYM(IDirectSoundBuffer_SetLFO),
         SYM(CDirectSoundStream_GetVoiceProperties), SYM(CDirectSoundStream_Set3DVoiceData),
         SYM(CDirectSoundStream_Use3DVoiceData), SYM(CDirectSoundStream_SetPitch), SYM(CDirectSoundStream_SetLFO),
-        SYM(CDirectSoundStream_SetOutputBuffer), SYM(IDirectSound_SetAllParameters), SYM(DirectSoundGetSampleTime)};
+        SYM(CDirectSoundStream_SetOutputBuffer), SYM(IDirectSound_SetAllParameters), SYM(DirectSoundGetSampleTime),
+        SYM(IDirectSoundBuffer_PlayEx), SYM(IDirectSoundBuffer_SetConeAngles), SYM(IDirectSoundBuffer_SetConeOutsideVolume),
+        SYM(IDirectSoundBuffer_SetConeOrientation), SYM(XAudioSetEffectData),
+        SYM(IDirectSoundStream_GetVoiceProperties), SYM(IDirectSoundStream_Set3DVoiceData),
+        SYM(IDirectSoundStream_Use3DVoiceData), SYM(IDirectSoundStream_SetLFO), SYM(IDirectSoundStream_SetOutputBuffer),
+        SYM(IDirectSoundStream_SetPitch)};
     std::string left;
     // the library's own section: the WMA decoder shares the export ids and touches no DSOUND object
     uint32_t lo = 0, hi = 0;
@@ -1199,6 +1259,8 @@ HLE_STDCALL(IDirectSound_SetEffectData, 6) {
     return 0;
 }
 HLE_STDCALL(IDirectSound_EnableHeadphones, 2) { return 0; }
+// (effect index, description, raw data out): the effects image is not run, as IDirectSound_SetEffectData
+HLE_STDCALL(XAudioSetEffectData, 3) { return 0; }
 // (this, mix bin, headroom)
 HLE_STDCALL(IDirectSound_SetMixBinHeadroom, 3) {
     std::lock_guard<std::recursive_mutex> lock(g_lock);
@@ -1392,6 +1454,8 @@ BUFFER(Play, 4) {
     v.sync = a[3] & 4;
     return 0;
 }
+// (this, time low, time high, flags): plays now, the start time is not reproduced
+BUFFER(PlayEx, 4) { return buf_Play(v, a); }
 BUFFER(Stop, 1) {
     bool was_playing = v.playing;
     v.playing = false;
@@ -1451,8 +1515,12 @@ BUFFER(SetCurrentPosition, 2) {
 }
 BUFFER(Lock, 8) {
     uint32_t off = a[1], n = a[2];
-    if (a[7] & 1) n = v.bytes;  // DSBLOCK_ENTIREBUFFER
     if (!v.bytes) return 0x80004005u;  // E_FAIL
+    if (XDK_DSound_LockFlagsSwapped && (a[7] & 1)) {  // DSBLOCK_FROMWRITECURSOR, as GetCurrentPosition reports it
+        uint32_t p = BytesOf(v, uint32_t(v.pos));
+        off = v.play_len ? (p + BytesOf(v, 64 * 4)) % v.play_len : 0;
+    }
+    if (a[7] & (XDK_DSound_LockFlagsSwapped ? 2 : 1)) n = v.bytes;  // DSBLOCK_ENTIREBUFFER
     off %= v.bytes;
     uint32_t first = std::min(n, v.bytes - off);
     W32(a[3], v.data + off);
@@ -1502,6 +1570,10 @@ BUFFER(SetMode, 3) {
     return 0;
 }
 BUFFER(SetDopplerFactor, 3) { return 0; }
+// the cone is not modelled: (this, inside, outside, apply), (this, volume, apply) and (this, x, y, z, apply)
+BUFFER(SetConeAngles, 4) { return 0; }
+BUFFER(SetConeOutsideVolume, 3) { return 0; }
+BUFFER(SetConeOrientation, 5) { return 0; }
 // (this, DS3DBUFFER, apply): position at +4, distances at +0x34 and +0x38, mode at +0x3C
 BUFFER(SetAllParameters, 3) {
     for (int i = 0; i < 3; i++) v.p[i] = F32(R32(a[1] + 4 + i * 4));
@@ -1704,6 +1776,37 @@ STREAM(SetPitch, 2) {
     return 0;
 }
 STREAM(SetLFO, 2) { return 0; }  // modulation is not played, as with SetEG
+// XDK 5849 names these six IDirectSoundStream_, the earlier ones CDirectSoundStream_
+HLE_STDCALL(IDirectSoundStream_SetLFO, 2) { return 0; }
+HLE_STDCALL(IDirectSoundStream_SetOutputBuffer, 2) { return 0; }  // the voice keeps its own mix bins
+HLE_STDCALL(IDirectSoundStream_GetVoiceProperties, 2) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Voice* v = Find(a[0]);
+    if (!v) return 0x80004005u;
+    WriteVoiceProps(*v, a[1]);
+    return 0;
+}
+HLE_STDCALL(IDirectSoundStream_Set3DVoiceData, 2) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Voice* v = Find(a[0]);
+    if (!v) return 0x80004005u;
+    ReadVoiceData(*v, a[1]);
+    return 0;
+}
+HLE_STDCALL(IDirectSoundStream_Use3DVoiceData, 2) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Voice* v = Find(a[0]);
+    if (!v) return 0x80004005u;
+    v->use_data = a[1] != 0;
+    return 0;
+}
+HLE_STDCALL(IDirectSoundStream_SetPitch, 2) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    Voice* v = Find(a[0]);
+    if (!v) return 0x80004005u;
+    v->freq = PitchToFrequency(a[1]);
+    return 0;
+}
 // the library's own writes voice registers a host stream does not have; envelopes are not played
 HLE_STDCALL(IDirectSoundStream_SetEG, 2) { return 0; }
 STREAM(SetHeadroom, 2) {

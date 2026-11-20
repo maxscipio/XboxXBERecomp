@@ -24,6 +24,16 @@
 #include "app/app.h"
 #include "xdk/hle.h"
 
+// configs written before the SDK knew the name
+#ifndef SYM_XNetGetConnectStatus
+#define SYM_XNetGetConnectStatus FFFFFB00
+#define HAS_XNetGetConnectStatus 0
+#endif
+#ifndef SYM_XNetUnregisterInAddr
+#define SYM_XNetUnregisterInAddr FFFFFB01
+#define HAS_XNetUnregisterInAddr 0
+#endif
+
 using kernel::HostPtr;
 using kernel::R32;
 using kernel::W32;
@@ -395,6 +405,14 @@ HLE_STDCALL(XNetRegisterKey, 2) {
     return 0;
 }
 HLE_STDCALL(XNetUnregisterKey, 1) { return 0; }
+
+// a secure address's connection: always up here, the peers are plain UDP (the library's own answered
+// XNET_CONNECT_STATUS_LOST without its network stack, and PGR2 dropped a system link host 16 ms after joining)
+HLE_STDCALL(XNetGetConnectStatus, 1) {
+    constexpr uint32_t kConnected = 2;  // XNET_CONNECT_STATUS_CONNECTED
+    return kConnected;
+}
+HLE_STDCALL(XNetUnregisterInAddr, 1) { return 0; }
 
 HLE_STDCALL(XNetGetTitleXnAddr, 1) {
     Init();
