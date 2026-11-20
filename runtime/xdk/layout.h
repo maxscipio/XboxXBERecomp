@@ -75,6 +75,9 @@ constexpr bool AllKnown(const LayoutKey (&keys)[N]) {
 #ifndef XDK_CDevice_Palettes
 #define XDK_CDevice_Palettes 0xFFFFFFFFu
 #endif
+#ifndef XDK_CDevice_Tiles
+#define XDK_CDevice_Tiles 0xFFFFFFFFu  // the D3DTILE records SetTile keeps, 24 bytes each, GetTile reads
+#endif
 #ifndef XDK_CDevice_RenderTarget
 #define XDK_CDevice_RenderTarget 0xFFFFFFFFu
 #endif
@@ -115,8 +118,48 @@ constexpr bool AllKnown(const LayoutKey (&keys)[N]) {
 #ifndef XDK_RenderState_Numbering
 #define XDK_RenderState_Numbering 0
 #endif
+// 3925, 3948 and 4039 number D3DRS and D3DTSS in their own generations (xdk/state_numbering.h); 5659 when absent
+#ifndef XDK_StateNumbering
+#define XDK_StateNumbering 5659
+#endif
 #ifndef XDK_CDevice_ScreenSpaceOffset
 #define XDK_CDevice_ScreenSpaceOffset 0xFFFFFFFFu
+#endif
+// mix bin headroom the library's DirectSoundCreate sets on every bin, in 6 dB steps (3936: 1; 5659 sets none)
+#ifndef XDK_DSound_MixBinHeadroom
+#define XDK_DSound_MixBinHeadroom 0
+#endif
+// 3936 DSOUND: mix bins are a mask of bins at full volume (0: the default for the channel count), not a DSMIXBINS
+#ifndef XDK_DSound_MixBinMask
+#define XDK_DSound_MixBinMask 0
+#endif
+// 3936 DSOUND: Lock's flag 1 is DSBLOCK_FROMWRITECURSOR and 2 DSBLOCK_ENTIREBUFFER (later XDKs: 1 ENTIREBUFFER)
+#ifndef XDK_DSound_LockFlagsSwapped
+#define XDK_DSound_LockFlagsSwapped 0
+#endif
+// 3948: the frame buffers' surface objects inside the device, 24 bytes each (back, front, third), and the auto depth
+// buffer's; when known the runtime builds its surfaces there and CDevice_BackBuffer / FrontBuffer are not needed
+#ifndef XDK_CDevice_FrameSurfaces
+#define XDK_CDevice_FrameSurfaces 0xFFFFFFFFu
+#endif
+#ifndef XDK_CDevice_AutoDepthSurface
+#define XDK_CDevice_AutoDepthSurface 0xFFFFFFFFu
+#endif
+// 3948: the present interval as a device field (later XDKs: the D3D_PresentInterval global)
+#ifndef XDK_CDevice_PresentInterval
+#define XDK_CDevice_PresentInterval 0xFFFFFFFFu
+#endif
+// D3DPRESENT_PARAMETERS' BufferSurfaces[3] and DepthStencilSurface after them; unknown where the XDK's parameters
+// have none (3948's end at 0x34)
+#ifndef XDK_PresentParams_BufferSurfaces
+#define XDK_PresentParams_BufferSurfaces 0x34u
+#endif
+// 1: the vertical blank callback takes the blank count itself (3948), not a D3DVBLANKDATA pointer
+#ifndef XDK_VBlankCallback_Count
+#define XDK_VBlankCallback_Count 0
+#endif
+#ifndef XDK_CDevice_VertexProgramPlanes
+#define XDK_CDevice_VertexProgramPlanes 0xFFFFFFFFu
 #endif
 #ifndef XDK_CDevice_AutoDepth
 #define XDK_CDevice_AutoDepth 0xFFFFFFFFu

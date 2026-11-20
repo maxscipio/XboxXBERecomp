@@ -28,6 +28,7 @@
 #include "xdk/d3d8.h"
 #include "xdk/hle.h"
 #include "xdk/layout.h"
+#include "xdk/state_numbering.h"
 
 using namespace kernel;
 
@@ -108,6 +109,34 @@ bool InCode(uint32_t va);  // cpu/dispatch.cpp
 #define SYM_D3DDevice_DrawIndexedVerticesUP FFFFFE0D
 #define HAS_D3DDevice_DrawIndexedVerticesUP 0
 #endif
+#ifndef SYM_D3DDevice_Present
+#define SYM_D3DDevice_Present FFFFFE0E
+#define HAS_D3DDevice_Present 0
+#endif
+#ifndef SYM_D3DDevice_GetBackBuffer
+#define SYM_D3DDevice_GetBackBuffer FFFFFE0F
+#define HAS_D3DDevice_GetBackBuffer 0
+#endif
+#ifndef SYM_D3DDevice_GetDepthStencilSurface
+#define SYM_D3DDevice_GetDepthStencilSurface FFFFFE10
+#define HAS_D3DDevice_GetDepthStencilSurface 0
+#endif
+#ifndef SYM_D3DDevice_SetVertexShaderConstant
+#define SYM_D3DDevice_SetVertexShaderConstant FFFFFE11
+#define HAS_D3DDevice_SetVertexShaderConstant 0
+#endif
+#ifndef SYM_D3DDevice_SetVertexShaderInput
+#define SYM_D3DDevice_SetVertexShaderInput FFFFFE12
+#define HAS_D3DDevice_SetVertexShaderInput 0
+#endif
+#ifndef SYM_D3DDevice_SetVertexShaderInputDirect
+#define SYM_D3DDevice_SetVertexShaderInputDirect FFFFFE13
+#define HAS_D3DDevice_SetVertexShaderInputDirect 0
+#endif
+#ifndef SYM_D3DDevice_SelectVertexShaderDirect
+#define SYM_D3DDevice_SelectVertexShaderDirect FFFFFE14
+#define HAS_D3DDevice_SelectVertexShaderDirect 0
+#endif
 
 namespace d3d {
 
@@ -144,12 +173,14 @@ std::unique_ptr<gpu::Backend> g_backend;
 // point size max 64.0 at 113, fill modes at 120 and 121.
 constexpr bool kXdk4361States = XDK_RenderState_Numbering == 4361;
 constexpr uint32_t kNoState = 0xFFFFFFFFu;
-constexpr uint32_t kDeferredFirstGuest = kXdk4361States ? 82 : gpu::kRsDeferredFirst;
-constexpr uint32_t kComplexFirstGuest = kXdk4361States ? 117 : gpu::kRsComplexFirst;
+// The other generations (3948, 4039) come from the layout's StateNumbering, through xdk/state_numbering.h's tables.
+constexpr auto& kNumbering = xdk::states::kNumbering;
+constexpr uint32_t kDeferredFirstGuest = kXdk4361States ? 82 : kNumbering.deferred_first;
+constexpr uint32_t kComplexFirstGuest = kXdk4361States ? 117 : kNumbering.rs[gpu::kRsComplexFirst];
 
 // the guest table slot of a host state, kNoState when this build has none
 constexpr uint32_t GuestSlot(uint32_t host) {
-    if (!kXdk4361States) return host;
+    if (!kXdk4361States) return host < gpu::kRsMax ? kNumbering.rs[host] : kNoState;
     if (host >= 92 && host <= 105) return host - 10;  // fog to color vertex
     if (host >= 110 && host <= 113) return host - 14;  // material sources
     if (host == 115) return 105;                        // ambient
@@ -160,7 +191,7 @@ constexpr uint32_t GuestSlot(uint32_t host) {
 
 // the host state of a guest table slot, kNoState when the host keeps none
 constexpr uint32_t HostState(uint32_t guest) {
-    if (!kXdk4361States) return guest;
+    if (!kXdk4361States) return xdk::states::RsFromTitle(guest);
     if (guest >= 82 && guest <= 95) return guest + 10;
     if (guest >= 96 && guest <= 99) return guest + 14;
     if (guest == 105) return 115;
@@ -250,12 +281,19 @@ gpu::Surface SurfaceOf(uint32_t header) {
     return s;
 }
 
-uint32_t NewSurface(uint32_t w, uint32_t h, uint32_t fmt, uint32_t bpp) {
+// hdr: a surface object to fill in rather than a new one (the title's own, or one inside the device); keep: the memory
+// it already holds is reused when large enough (the title may find that memory again another way)
+uint32_t NewSurface(uint32_t w, uint32_t h, uint32_t fmt, uint32_t bpp, uint32_t hdr = 0, bool keep = false) {
     uint32_t pitch = (w * bpp + 63) & ~63u;
-    uint32_t data = mem::AllocContiguous(pitch * h, 0, 0xFFFFFFFF, 0x1000);
-    uint32_t hdr = mem::AllocSystem(24);
+    uint32_t phys = 0;
+    if (keep && hdr && R32(hdr + 4) && R32(hdr + 16)) {
+        uint32_t size = R32(hdr + 16), had = ((size >> 24) + 1) * 64 * (((size >> 12) & 0xFFF) + 1);
+        if (had >= pitch * h) phys = R32(hdr + 4) & 0x0FFFFFFF;
+    }
+    if (!phys) phys = mem::PhysicalFromVirtual(mem::AllocContiguous(pitch * h, 0, 0xFFFFFFFF, 0x1000));
+    if (!hdr) hdr = mem::AllocSystem(24);
     W32(hdr + 0, 0x000D0001);  // surface, one reference, one internal reference held by the device
-    W32(hdr + 4, mem::PhysicalFromVirtual(data));
+    W32(hdr + 4, phys);
     W32(hdr + 8, 0);
     W32(hdr + 12, 0x00010021 | (fmt << 8));  // dma A, 2D, one level
     W32(hdr + 16, (w - 1) | (h - 1) << 12 | (pitch / 64 - 1) << 24);
@@ -271,12 +309,11 @@ decltype(gpu::State::rs) g_flushed_rs{};
 
 void SyncDeferred() {
     // deferred states live in the title's memory, the inline SetRenderState and SetTextureStageState write them
-    for (uint32_t i = kDeferredFirstGuest; i < kComplexFirstGuest; i++) {
-        uint32_t host = HostState(i);
-        if (host < gpu::kRsMax) g_state.rs[host] = R32(kRenderState + i * 4);
-    }
+    for (uint32_t host = gpu::kRsDeferredFirst; host < gpu::kRsComplexFirst; host++)
+        if (uint32_t slot = GuestSlot(host); slot != kNoState) g_state.rs[host] = R32(kRenderState + slot * 4);
     for (int s = 0; s < 4; s++)
-        for (uint32_t i = 0; i < gpu::kTssBumpEnvMat00; i++) g_state.tss[s][i] = R32(kTextureState + (s * kStageStates + i) * 4);
+        for (uint32_t i = 0; i < gpu::kTssBumpEnvMat00; i++)
+            g_state.tss[s][i] = R32(kTextureState + (s * kStageStates + kNumbering.tss[i]) * 4);
     if (!(Dev(XDK_CDevice_Flags) & kRecordingFlag)) g_flushed_rs = g_state.rs;
 }
 
@@ -309,12 +346,18 @@ void UpdateViewportConstants() {
 }
 
 // The guest's render state table ends where D3D_Streams begins; states past that point are kept only on the host
-constexpr uint32_t kRenderStateSlots = (kStreams - kRenderState) / 4;
+constexpr uint32_t kRenderStateSlots = XDK_StateNumbering == 5659 ? (kStreams - kRenderState) / 4 : kNumbering.count;
 
 void SetComplex(uint32_t rs, uint32_t v) {
     g_state.rs[rs] = v;
     uint32_t slot = GuestSlot(rs);
     if (slot < kRenderStateSlots) W32(kRenderState + slot * 4, v);  // titles read their states back from the library's table
+}
+
+// a texture stage state as the library stores it, in the title's numbering
+void StoreTss(uint32_t stage, uint32_t tss, uint32_t v) {
+    g_state.tss[stage][tss] = v;
+    W32(kTextureState + (stage * kStageStates + kNumbering.tss[tss]) * 4, v);
 }
 
 // The library's default render and texture stage states; its pushes land in the scratch buffer
@@ -323,29 +366,60 @@ void ApplyDefaultStates(X86Context& ctx) {
     else LOG_FIRST(1, "d3d: the image has no D3D_InitDefaultState, default states were not applied");
 }
 
+// a surface object the title made and put in D3DPRESENT_PARAMETERS (BufferSurfaces, DepthStencilSurface), else 0
+uint32_t GivenSurface(uint32_t at) {
+    uint32_t s = R32(at);
+    return s && mem::IsCommitted(s) && mem::IsCommitted(s + 23) && (R32(s) >> 16 & 7) == 5 ? s : 0;
+}
+
 // The frame buffers a D3DPRESENT_PARAMETERS asks for become the device's targets, the viewport covers them. The
-// renderer is made at the first ones' size.
+// renderer is made at the first ones' size. Surface objects the title made itself (BufferSurfaces, back buffer
+// first, and DepthStencilSurface) become the buffers, in this size and format.
 void SetFrameBuffers(const char* caller, uint32_t pp) {
     uint32_t w = R32(pp), h = R32(pp + 4), fmt = R32(pp + 8), count = std::max<uint32_t>(R32(pp + 12), 1);
     uint32_t auto_depth = R32(pp + 0x20), depth_fmt = R32(pp + 0x24), interval = R32(pp + 0x30);
     if (!w) w = 640;
     if (!h) h = 480;
     g_interval = (interval & 7) == 4 ? 3 : std::clamp<uint32_t>(interval & 7, 1, 2);
+    // where the library's own CreateDevice keeps the interval (3948)
+    if (XDK_CDevice_PresentInterval != xdk::kUnknown) SetDev(XDK_CDevice_PresentInterval, interval);
     uint32_t ms = R32(pp + 0x10);  // D3DMULTISAMPLE_TYPE: samples across in bits 4-7, down in bits 0-3
     g_ms_x = std::max<uint32_t>(ms >> 4 & 0xF, 1);
     g_ms_y = std::max<uint32_t>(ms & 0xF, 1);
+    // older XDKs' parameters end before these fields (3948's after the presentation interval): what follows there is
+    // the caller's stack
+    uint32_t given[3] = {}, given_depth = 0;
+    if (XDK_PresentParams_BufferSurfaces != xdk::kUnknown) {
+        for (uint32_t i = 0; i < 3; i++) given[i] = GivenSurface(pp + XDK_PresentParams_BufferSurfaces + i * 4);
+        given_depth = GivenSurface(pp + XDK_PresentParams_BufferSurfaces + 12);
+    }
+    if (given_depth && !auto_depth) depth_fmt = R32(given_depth + 12) >> 8 & 0xFF;
     LOGI("d3d: %s %ux%u format %X buffers %u depth %u format %X interval %X flags %X", caller, w, h, fmt, count,
          auto_depth, depth_fmt, interval, R32(pp + 0x28));
     uint32_t color_fmt = gpu::LinearColorFormat(fmt);
-    uint32_t zf = auto_depth ? gpu::LinearDepthFormat(depth_fmt) : 0;
+    uint32_t zf = auto_depth || given_depth ? gpu::LinearDepthFormat(depth_fmt) : 0;
     // surfaces of the same shape are kept: a title wraps their memory in textures of its own across a Reset
-    static std::array<uint32_t, 5> made{};
-    std::array<uint32_t, 5> asked{w, h, color_fmt, std::min<uint32_t>(count + 1, 3), zf};
+    static std::array<uint32_t, 7> made{};
+    std::array<uint32_t, 7> asked{w, h, color_fmt, std::min<uint32_t>(count + 1, 3), zf, given[0], given_depth};
     if (asked != made) {
         made = asked;
         g_buffer_count = asked[3];
-        for (uint32_t i = 0; i < g_buffer_count; i++) g_buffers[i] = NewSurface(w, h, color_fmt, 4);
-        g_depth = zf ? NewSurface(w, h, zf, zf == 0x30 || zf == 0x31 ? 2 : 4) : 0;  // 0x30 LIN_D16, 0x31 LIN_F16
+        // in the device (3948) the back buffer is slot 0 and the front slot 1, as its GetBackBuffer counts them;
+        // BufferSurfaces count the same way
+        constexpr uint32_t kSlot[3] = {1, 0, 2};
+        for (uint32_t i = 0; i < g_buffer_count; i++) {
+            uint32_t hdr = given[kSlot[i]] ? given[kSlot[i]]
+                           : XDK_CDevice_FrameSurfaces == xdk::kUnknown ? 0
+                                                                        : kDevice + XDK_CDevice_FrameSurfaces + kSlot[i] * 24;
+            g_buffers[i] = NewSurface(w, h, color_fmt, 4, hdr, given[kSlot[i]] != 0);
+        }
+        g_depth = 0;
+        if (zf) {
+            uint32_t hdr = given_depth                                     ? given_depth
+                           : XDK_CDevice_AutoDepthSurface == xdk::kUnknown ? 0
+                                                                           : kDevice + XDK_CDevice_AutoDepthSurface;
+            g_depth = NewSurface(w, h, zf, zf == 0x30 || zf == 0x31 ? 2 : 4, hdr, given_depth != 0);  // 0x30 LIN_D16, 0x31 LIN_F16
+        }
     }
     if (!g_backend) {
         g_backend = gpu::CreateBackend();
@@ -363,8 +437,10 @@ void SetFrameBuffers(const char* caller, uint32_t pp) {
     g_state.viewport = {0, 0, w, h, 0.0f, 1.0f};
     SetDev(kDevRenderTarget, g_buffers[1]);
     SetDev(kDevDepth, g_depth);
-    SetDev(kDevBackBuffer, g_buffers[1]);
-    SetDev(kDevFrontBuffer, g_buffers[1]);
+    if (XDK_CDevice_FrameSurfaces == xdk::kUnknown) {
+        SetDev(kDevBackBuffer, g_buffers[1]);
+        SetDev(kDevFrontBuffer, g_buffers[1]);
+    }
     float one = 1.0f, zs = g_depth && (R32(g_depth + 12) >> 8 & 0xFF) == 0x30 ? 65535.0f : 16777215.0f;
     std::memcpy(HostPtr(kDevice + kDevSuperX), &one, 4);
     std::memcpy(HostPtr(kDevice + kDevSuperY), &one, 4);
@@ -407,7 +483,9 @@ void VerticalBlank(X86Context& ctx) {
         SetDev(XDK_CDevice_VBlankCount, count);
         ObjectRef event = FromPointer(kDevice + XDK_CDevice_VBlankEvent);
         SetEvent(*event);
-        if (uint32_t callback = Dev(XDK_CDevice_VBlankCallback)) {
+        if (uint32_t callback = Dev(XDK_CDevice_VBlankCallback); callback && XDK_VBlankCallback_Count) {
+            CallGuest(ctx, callback, {count});  // the blank count itself, not a D3DVBLANKDATA
+        } else if (callback) {
             // blank count, swaps shown, 1 when this blank showed one
             W32(info, count);
             W32(info + 4, swaps);
@@ -439,12 +517,25 @@ HLE_STDCALL(Direct3D_CreateDevice, 6) {
     XDK_REQUIRE("d3d", XDK_KEY(CDevice_Push), XDK_KEY(CDevice_PushThreshold), XDK_KEY(CDevice_BaseVertex),
                 XDK_KEY(CDevice_ZScale), XDK_KEY(CDevice_SuperSampleX),
                 XDK_KEY(CDevice_SuperSampleY), XDK_KEY(CDevice_Transforms), XDK_KEY(CDevice_Textures),
-                XDK_KEY(CDevice_RenderTarget), XDK_KEY(CDevice_Depth), XDK_KEY(CDevice_BackBuffer),
-                XDK_KEY(CDevice_FrontBuffer), XDK_KEY(CDevice_SwapCount), XDK_KEY(CDevice_Size),
+                XDK_KEY(CDevice_RenderTarget), XDK_KEY(CDevice_Depth), XDK_KEY(CDevice_SwapCount), XDK_KEY(CDevice_Size),
                 XDK_KEY(DirtyFlags_Texture), XDK_KEY(TextureState_Stage), XDK_KEY(Stream_Size),
                 XDK_KEY(Stream_Stride), XDK_KEY(Stream_Buffer));
+    if (XDK_CDevice_FrameSurfaces == xdk::kUnknown) XDK_REQUIRE("d3d", XDK_KEY(CDevice_BackBuffer), XDK_KEY(CDevice_FrontBuffer));
     std::lock_guard<std::recursive_mutex> lock(g_lock);
+    // 3948 keeps the frame buffer objects in the device: kept across the clear, so the same parameters reuse them
+    uint8_t frame_surfaces[3 * 24], auto_depth_surface[24];
+    bool inline_surfaces = XDK_CDevice_FrameSurfaces != xdk::kUnknown && g_buffers[1];
+    if (inline_surfaces) {
+        std::memcpy(frame_surfaces, HostPtr(kDevice + XDK_CDevice_FrameSurfaces), sizeof frame_surfaces);
+        if (XDK_CDevice_AutoDepthSurface != xdk::kUnknown)
+            std::memcpy(auto_depth_surface, HostPtr(kDevice + XDK_CDevice_AutoDepthSurface), sizeof auto_depth_surface);
+    }
     std::memset(HostPtr(kDevice), 0, XDK_CDevice_Size);
+    if (inline_surfaces) {
+        std::memcpy(HostPtr(kDevice + XDK_CDevice_FrameSurfaces), frame_surfaces, sizeof frame_surfaces);
+        if (XDK_CDevice_AutoDepthSurface != xdk::kUnknown)
+            std::memcpy(HostPtr(kDevice + XDK_CDevice_AutoDepthSurface), auto_depth_surface, sizeof auto_depth_surface);
+    }
     W32(kDevicePtr, kDevice);
     const uint32_t pusher = mem::AllocSystem(kPusherKickWait + 4);
     SetDev(kDevPusher, pusher);
@@ -455,6 +546,14 @@ HLE_STDCALL(Direct3D_CreateDevice, 6) {
     gpu::MarkAllSimple();
     gpu::g_simple_tracked = true;
     SetFrameBuffers("CreateDevice", a[4]);
+    // the default planes, as GetDepthClipPlanes reports them to a title that derives its own from them
+    if (XDK_CDevice_VertexProgramPlanes != xdk::kUnknown) {
+        float far_z = 16777215.0f;
+        uint32_t bits;
+        std::memcpy(&bits, &far_z, 4);
+        SetDev(XDK_CDevice_VertexProgramPlanes, 0);
+        SetDev(XDK_CDevice_VertexProgramPlanes + 4, bits);
+    }
     // 60 Hz, widescreen
     if (XDK_CDevice_DisplayFlags != xdk::kUnknown) SetDev(XDK_CDevice_DisplayFlags, 0x400000 | (app::Widescreen() ? 0x10000 : 0));
     // the miniport's hardware init leaves an identity ramp in slot 0, which GetGammaRamp reads until one is set
@@ -735,6 +834,22 @@ HLE_STDCALL(D3DDevice_GetBackBuffer2, 1) {
     return s;
 }
 
+// 3948's forms hand the surface out through a pointer and return an HRESULT
+HLE_STDCALL(D3DDevice_GetBackBuffer, 3) {
+    int32_t i = int32_t(a[0]);
+    uint32_t s = i < 0 ? g_buffers[0] : g_buffers[std::min<uint32_t>(uint32_t(i) + 1, g_buffer_count - 1)];
+    W32(s, R32(s) + 1);
+    if (a[2]) W32(a[2], s);
+    return 0;
+}
+HLE_STDCALL(D3DDevice_GetDepthStencilSurface, 1) {
+    uint32_t s = Dev(kDevDepth);
+    if (a[0]) W32(a[0], s);
+    if (!s) return 0x88760866u;  // D3DERR_NOTFOUND
+    W32(s, R32(s) + 1);
+    return 0;
+}
+
 HLE_STDCALL(D3DDevice_GetRenderTarget2, 0) {
     uint32_t s = Dev(kDevRenderTarget);
     if (s) W32(s, R32(s) + 1);
@@ -771,8 +886,8 @@ void CallSwapCallback(X86Context& ctx, uint32_t swaps) {
 }
 }  // namespace
 
-HLE_STDCALL(D3DDevice_Swap, 1) {
-    app::SplashFirstFrame();
+namespace {
+uint32_t SwapFrame(X86Context& ctx) {
     // handed over from the previous instance: the window opens on the second frame, the first picture with
     // anything drawn over it right after
     if (app::HandingOver() && g_presents >= 2) {
@@ -819,6 +934,15 @@ HLE_STDCALL(D3DDevice_Swap, 1) {
     SetDev(kDevSwapCount, n);
     CallSwapCallback(ctx, n);
     return n;
+}
+}  // namespace
+
+HLE_STDCALL(D3DDevice_Swap, 1) { return SwapFrame(ctx); }
+
+// 3948: Present(source rect, dest rect, window, dirty region) is the swap, the rects unused on the console
+HLE_STDCALL(D3DDevice_Present, 4) {
+    SwapFrame(ctx);
+    return 0;
 }
 
 HLE_STDCALL(D3DDevice_Clear, 6) {
@@ -938,12 +1062,12 @@ COMPLEX_STATE(RopZRead, gpu::kRsRopZRead)
 COMPLEX_STATE(DoNotCullUncompressed, gpu::kRsDoNotCullUncompressed)
 
 HLE_STDCALL(D3DDevice_SetTextureState_TexCoordIndex, 2) {
-    g_state.tss[a[0] & 3][gpu::kTssTexCoordIndex] = a[1];
-    W32(kTextureState + ((a[0] & 3) * kStageStates + gpu::kTssTexCoordIndex) * 4, a[1]);
+    StoreTss(a[0] & 3, gpu::kTssTexCoordIndex, a[1]);
     return 0;
 }
 HLE_STDCALL(D3DDevice_SetTextureState_BumpEnv, 3) {
-    if (a[1] >= gpu::kTssBumpEnvMat00 && a[1] <= gpu::kTssBumpEnvLOffset) g_state.tss[a[0] & 3][a[1]] = a[2];
+    uint32_t t = xdk::states::TssFromTitle(a[1]);
+    if (t >= gpu::kTssBumpEnvMat00 && t <= gpu::kTssBumpEnvLOffset) g_state.tss[a[0] & 3][t] = a[2];
     return 0;
 }
 HLE_STDCALL(D3DDevice_SetTextureState_BorderColor, 2) {
@@ -955,11 +1079,8 @@ HLE_STDCALL(D3DDevice_SetTextureState_ColorKeyColor, 2) {
     return 0;
 }
 HLE_STDCALL(D3DDevice_SetTextureStageStateNotInline, 3) {
-    uint32_t stage = a[0] & 3, type = a[1], v = a[2];
-    if (type < gpu::kTssCount) {
-        g_state.tss[stage][type] = v;
-        W32(kTextureState + (stage * kStageStates + type) * 4, v);
-    }
+    uint32_t stage = a[0] & 3, type = xdk::states::TssFromTitle(a[1]), v = a[2];
+    if (type != xdk::states::kNone) StoreTss(stage, type, v);
     return 0;
 }
 
@@ -1193,6 +1314,12 @@ HLE_FASTCALL(D3DDevice_SetVertexShaderConstantNotInlineFast, 1) {
     return 0;
 }
 
+// 3948: SetVertexShaderConstant(register -96 to 95, data, count of vectors); the hardware slot is register + 96
+HLE_STDCALL(D3DDevice_SetVertexShaderConstant, 3) {
+    SetConstants(a[0] + 96, a[1], std::min<uint32_t>(a[2], 192));  // a wild count would loop for minutes
+    return 0;
+}
+
 // Vertex program memory: Load writes instructions at a slot, Select runs the program that starts at one
 namespace {
 constexpr uint32_t kProgramSlots = 136;
@@ -1270,7 +1397,17 @@ void ApplyShaderInputs(uint32_t handle, gpu::VertexShader& vs) {
     vs.stream_stride = it->second->stream_stride;
 }
 
-// one shader object per program and input layout; handle 0 keeps the bound shader's inputs
+// one shader object per program and input layout
+std::shared_ptr<gpu::VertexShader> Intern(gpu::VertexShader&& vs) {
+    uint64_t key = gpu::Hash(vs.program.data(), vs.program.size() * 4);
+    key = gpu::Hash(vs.inputs.data(), sizeof(vs.inputs), key);
+    key = gpu::Hash(vs.stream_stride.data(), sizeof(vs.stream_stride), key);
+    auto& kept = g_selected[key];
+    if (!kept) kept = std::make_shared<gpu::VertexShader>(std::move(vs));
+    return kept;
+}
+
+// handle 0 keeps the bound shader's inputs
 std::shared_ptr<gpu::VertexShader> SelectedShader(uint32_t handle, uint32_t slot) {
     gpu::VertexShader vs;
     vs.program = ProgramAt(slot);
@@ -1281,12 +1418,36 @@ std::shared_ptr<gpu::VertexShader> SelectedShader(uint32_t handle, uint32_t slot
         vs.inputs = g_state.vs->inputs;
         vs.stream_stride = g_state.vs->stream_stride;
     }
-    uint64_t key = gpu::Hash(vs.program.data(), vs.program.size() * 4);
-    key = gpu::Hash(vs.inputs.data(), sizeof(vs.inputs), key);
-    key = gpu::Hash(vs.stream_stride.data(), sizeof(vs.stream_stride), key);
-    auto& kept = g_selected[key];
-    if (!kept) kept = std::make_shared<gpu::VertexShader>(std::move(vs));
-    return kept;
+    return Intern(std::move(vs));
+}
+
+// 3948 takes the inputs and the streams they read at once: SetVertexShaderInput(Direct) puts them over the selected
+// program's, the stream records (buffer, stride, offset) in the title's array
+void SetVertexInput(const std::array<gpu::VertexShader::Input, kInputRegisters>& attrs, uint32_t count, uint32_t streams) {
+    if (!g_state.vs) {
+        LOG_FIRST(8, "d3d: SetVertexShaderInput without a selected vertex program");
+        return;
+    }
+    gpu::VertexShader vs = *g_state.vs;
+    vs.inputs = {};
+    vs.stream_stride.fill(0);
+    for (uint32_t r = 0; r < kInputRegisters; r++) {
+        const auto& in = attrs[r];
+        if (in.stream < 0 || !in.type || in.type == kTypeNone || uint32_t(in.stream) >= count || !streams) continue;
+        uint32_t record = streams + uint32_t(in.stream) * 12;
+        g_state.streams[size_t(in.stream)] = {R32(record), R32(record + 4)};
+        vs.inputs[r] = {in.stream, in.offset + R32(record + 8), in.type};
+        vs.stream_stride[size_t(in.stream)] = std::max(vs.stream_stride[size_t(in.stream)], vs.inputs[r].offset + ElementBytes(in.type));
+    }
+    g_state.vs = Intern(std::move(vs));
+}
+
+// 16 inputs of (stream, offset, type) as the title's array holds them
+std::array<gpu::VertexShader::Input, kInputRegisters> DirectInputs(uint32_t p) {
+    std::array<gpu::VertexShader::Input, kInputRegisters> attrs{};
+    for (uint32_t r = 0; r < kInputRegisters; r++)
+        attrs[r] = {int(R32(p + r * kShaderInputBytes)), R32(p + r * kShaderInputBytes + 4), R32(p + r * kShaderInputBytes + 8) & 0xFF};
+    return attrs;
 }
 }  // namespace
 
@@ -1320,6 +1481,47 @@ HLE_STDCALL(D3DDevice_SelectVertexShader, 2) {
     }
     g_state.vs = SelectedShader(handle, a[1]);
     if (handle) g_state.vs_handle = handle;
+    return 0;
+}
+
+// (inputs, slot): 16 inputs of (stream, offset, type) as SetVertexShaderInputDirect takes them, the program at the slot
+HLE_STDCALL(D3DDevice_SelectVertexShaderDirect, 2) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    gpu::VertexShader vs;
+    vs.program = ProgramAt(a[1]);
+    vs.program_type = kVertexProgramType;
+    if (a[0]) {
+        vs.inputs = DirectInputs(a[0]);
+        for (uint32_t r = 0; r < kInputRegisters; r++) {
+            auto& in = vs.inputs[r];
+            if (!in.type || in.type == kTypeNone || in.stream < 0 || uint32_t(in.stream) >= vs.stream_stride.size()) {
+                in = {};
+                continue;
+            }
+            vs.stream_stride[size_t(in.stream)] = std::max(vs.stream_stride[size_t(in.stream)], in.offset + ElementBytes(in.type));
+        }
+    }
+    g_state.vs = Intern(std::move(vs));
+    g_state.vs_handle = (a[0] ? a[0] : 0x10) | 1;
+    return 0;
+}
+
+// (handle, stream count, streams): the declaration's inputs read from the streams the title lists
+HLE_STDCALL(D3DDevice_SetVertexShaderInput, 3) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    auto it = g_vs.find(a[0]);
+    if (it == g_vs.end() || !it->second) {
+        LOG_FIRST(8, "d3d: SetVertexShaderInput with unknown handle %08X", a[0]);
+        return 0;
+    }
+    SetVertexInput(it->second->inputs, a[1], a[2]);
+    return 0;
+}
+
+// (inputs, stream count, streams): the same with the inputs given directly
+HLE_STDCALL(D3DDevice_SetVertexShaderInputDirect, 3) {
+    std::lock_guard<std::recursive_mutex> lock(g_lock);
+    if (a[0]) SetVertexInput(DirectInputs(a[0]), a[1], a[2]);
     return 0;
 }
 HLE_STDCALL(D3DDevice_SetShaderConstantMode, 1) {
@@ -1821,7 +2023,14 @@ HLE_STDCALL(D3D_PushSegment, 2) {
 }
 
 // frame buffer compression tiles are the console's memory controller's business
-HLE_STDCALL(D3DDevice_SetTile, 2) { return 0; }
+// (index, tile): there is no tiled memory here, but the record is kept where the library keeps it: titles read it
+// back with GetTile (007: Everything or Nothing finds its depth buffer's memory so, for its weapon carousel)
+HLE_STDCALL(D3DDevice_SetTile, 2) {
+    constexpr uint32_t kTileBytes = 24, kTiles = 8;
+    if (XDK_CDevice_Tiles != xdk::kUnknown && a[0] < kTiles)
+        for (uint32_t i = 0; i < kTileBytes; i += 4) W32(kDevice + XDK_CDevice_Tiles + a[0] * kTileBytes + i, a[1] ? R32(a[1] + i) : 0);
+    return 0;
+}
 
 // D3DTILE: flags, memory, size, pitch, z start tag, z offset
 constexpr uint32_t kTileMemory = 4;
