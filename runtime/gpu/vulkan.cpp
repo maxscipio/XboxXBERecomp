@@ -733,12 +733,21 @@ bool OffsetsPolygons(const State& s, Topology topology) {
     return topology == Topology::Triangles && SimpleState(s, kMSolidOffsetEnable);
 }
 
+// a draw that depth tests with LEQUAL but writes no depth is a second pass over surfaces already drawn (lightmap
+// modulation, decals). The console's 24 bit depth absorbs the last bits of difference between the two passes'
+// transforms, the host's float depth does not and the second pass fails in triangle shaped patches: it moves this many
+// steps of the console's depth toward the camera
+constexpr uint32_t kCmpLessEqual = 0x203;  // D3DCMP_LESSEQUAL
+constexpr float kRedrawDepthSteps = 64;
+
 // ReversedDepthHlsl's zparams: x the w buffer's scale (0 for a z buffer), y its far w, z the polygon offset in units of
 // the clip w for a w buffer, of depth for a z buffer
 void FillDepthConstants(const State& s, const DrawShaders& sh, Topology topo, DrawConstants& c) {
     bool offset = OffsetsPolygons(s, topo);
     float units = offset ? Bits(SimpleState(s, kMDepthOffset)) : 0;
     if (s.rs[kRsZEnable] != kZUseW) {
+        if (s.rs[kRsZEnable] && SimpleState(s, kMZFunc) == kCmpLessEqual && !SimpleState(s, kMZWriteEnable))
+            units -= kRedrawDepthSteps;
         c.zparams[2] = units / s.zscale;
         return;
     }

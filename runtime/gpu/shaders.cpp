@@ -1084,10 +1084,13 @@ std::string QuadHlsl(std::string s) {
 namespace {
 
 // A w buffer's reversed depth comes from the clip w alone, zparams.x * (zparams.y / w - 1), exact where z / w had
-// already rounded away; a z buffer's is 1 - z, given as w - z. zparams.z is the polygon offset in the units of each
+// already rounded away; a z buffer's is 1 - z, given as w - z. zparams.z is the polygon offset in the units of each; a
+// z buffer's offset toward the camera stops at the near plane, as the console's applies after clipping, so a surface at
+// the near plane (a menu's) is not clipped by it
 const char* kReversedClipHlsl = R"(float ReversedClip(float wz, float w) {
     if (zparams.x != 0) return zparams.x * (zparams.y - (w + zparams.z));
-    return wz - zparams.z * w;
+    float offset = wz - zparams.z * w;
+    return zparams.z < 0 ? min(offset, max(wz, w)) : offset;
 }
 )";
 
