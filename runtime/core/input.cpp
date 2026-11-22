@@ -284,14 +284,15 @@ void UpdatePads() {
 
 void Init() {
     if (g_sdl) return;  // started already for the game code window
-    // WGI reads the triggers apart and HIDAPI takes PlayStation and Switch pads. DirectInput stays off: with it on,
-    // an Xbox One pad shows up as a raw DirectInput joystick (guid 03008d12...045e...02ff) that SDL has no mapping for.
+    // WGI reads the triggers apart and HIDAPI takes PlayStation and Switch pads. XInput stays on for the Xbox-style
+    // wired pads WGI does not list: without it they show up as raw DirectInput joysticks (an Xbox One pad is guid
+    // 03008d12...045e...02ff, a PowerA Core one 03008b3b...20d6) that SDL has no mapping for. DirectInput stays off.
     // Reads come from the guest's threads, so SDL's own thread takes the device notices.
     SDL_SetHint(SDL_HINT_JOYSTICK_THREAD, "1");
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     SDL_SetHint(SDL_HINT_JOYSTICK_WGI, "1");
     SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT, "0");
-    SDL_SetHint(SDL_HINT_XINPUT_ENABLED, "0");
+    SDL_SetHint(SDL_HINT_XINPUT_ENABLED, "1");
     SDL_SetHint(SDL_HINT_JOYSTICK_DIRECTINPUT, "0");
     if (!SDL_Init(SDL_INIT_GAMEPAD)) {
         LOGE("input: SDL failed to start, no controllers: %s", SDL_GetError());
