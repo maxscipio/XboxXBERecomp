@@ -218,7 +218,11 @@ float Aspect() {
     return Widescreen() ? 16.0f / 9.0f : 4.0f / 3.0f;
 }
 
-bool FillsScreen() { return g_aspect.load() <= 0 && !Get().console_look && Get().aspect == 3; }
+bool FillsScreen() {
+    if (Get().console_look) return false;
+    if (g_aspect.load() > 0) return g_wide_2d.load();
+    return Get().aspect == 3;
+}
 
 float RenderScale(uint32_t guest_height) {
     if (g_native_render || Get().console_look) return 1.0f;

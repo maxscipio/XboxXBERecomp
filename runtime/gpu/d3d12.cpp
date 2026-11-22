@@ -4684,10 +4684,12 @@ void D3D12Backend::ApplySettings() {
 // Ultrawide: a title lays out its 2D (HUD, menus) for 16:9; shown wider it would stretch. Pretransformed draws without
 // a depth test on a stretched screen target are squeezed into the centred 16:9 part, unless they span the whole width
 // (full screen passes: the frame's own copy, blurs, movies). Depth tested ones (light glows, their visibility probes)
-// sit at world positions and stay. Returns the factor across, 1 for none.
+// sit at world positions and stay; a test that always passes is none. Returns the factor across, 1 for none.
 float D3D12Backend::HudSqueeze(const State& s, const Assembled& a) const {
     constexpr float kWide = 16.0f / 9.0f;
-    if (!a.pretransformed || s.rs[kRsZEnable] || aspect_ <= kWide + 1e-3f || !bound_rt_) return 1;
+    constexpr uint32_t kCmpAlways = 0x207;  // D3DCMP_ALWAYS: a title may switch the test on and have it always pass
+    bool tested = s.rs[kRsZEnable] && SimpleState(s, kMZFunc) != kCmpAlways;
+    if (!a.pretransformed || tested || aspect_ <= kWide + 1e-3f || !bound_rt_) return 1;
     const Target& t = *bound_rt_;
     if (XStretch(t.gw, t.gh) <= 1) return 1;
     // the draw's extent across, from register 0's x

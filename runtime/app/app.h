@@ -84,12 +84,16 @@ inline constexpr uint32_t kMsaaCount = 4;
 // A title that picks the shown aspect ratio itself sets this (any thread): width over height of the picture the frame
 // is fitted into, black bars around it; 0 follows the output, see Widescreen
 inline std::atomic<float> g_aspect{0};
+// With g_aspect set wider than 16:9: the title widens its 3D views to it, and the renderer keeps the 2D in a centred
+// 16:9 part as for FillsScreen, instead of stretching everything across the picture
+inline std::atomic<bool> g_wide_2d{false};
 inline std::atomic<bool> g_native_render{false};  // render at the console's resolution, whatever the render scale
 // g_aspect, else the output's shape when the aspect setting fills the screen (never under 16:9), else 16:9 when
 // Widescreen, else 4:3
 float Aspect();
-// the aspect setting fills the screen (ultrawide) and the title has not picked a shape itself: the renderer stretches
-// the screen shaped targets across and keeps the 2D in a centred 16:9 part. A title widens its own 3D views.
+// the aspect setting fills the screen (ultrawide) and the title has not picked a shape itself, or has asked for the same
+// with g_wide_2d: the renderer stretches the screen shaped targets across and keeps the 2D in a centred 16:9 part. A
+// title widens its own 3D views.
 bool FillsScreen();
 
 std::filesystem::path ExeDir();
