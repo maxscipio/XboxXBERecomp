@@ -57,20 +57,19 @@ How the European Xbox Burnout (title ID 0x41430006, XDK 1.0.4361) went from an I
 
 ## 7. Host features added this week
 
-- **Esc quits** (`sdk\runtime\app\main.cpp`), unless the F8 panel or quit dialog is open, which Esc closes instead (`src\common\game_info.cpp`).
-- **Controller:** F9 opens the controller setup screen, ported from the Baldur's Gate recomp (`src\common\pad_mapping.cpp`). It lists the connected pads, runs a map-every-button wizard, tests live and restores the default. Mappings are kept per pad in `controller_mapping.txt` beside the exe and re-applied at window start. `padmap::Prepare` (the `init` hook) turns SDL's XInput on with override priority, because the SDK turns it off and Xbox pads then showed up as unmapped DirectInput devices. `CMakeLists.txt` gives `pad_mapping.cpp` SDL's include path. The earlier launcher and its start screen stay removed; display options are in F8.
-- **FPS overlay:** F2 toggles it (`src\common\overlay.cpp`). It is saved as `show_fps`.
-- **F12, or Start + Back held 1.5 s on a pad:** a quit confirmation (`src\common\overlay.cpp`). Esc still quits at once with nothing open.
-- **F8 graphics panel** (`src\common\graphics.cpp`): window mode, resolution, render scale, vsync, frame rate, anisotropic filtering, FXAA, an "Original rendering" switch that keeps the other choices and restores them, and Defaults. Saved in `settings.toml` (`game_fps`, `anti_aliasing`, `original_rendering`, `kept_*`).
-- **FXAA** (`src\common\enhance.cpp`): a `gpu::Extension::Present` pass on the finished picture. Off by default.
-- **Frame rate** (30, 60, 120; default 60):
-  - the game steps once per Swap with a fixed dt, a float at `0x664C8C` (1/60 s, or 1/50 s when `sub_00074176` finds the PAL flag at `0x8A7834`) and whole milliseconds at `0x664C88`. `graphics::ApplyGameFps` rewrites those two, and only when they hold the game's own or our earlier value. The `.rdata` constants 1/60 and 1/50 are shared with other code, so they are not touched;
-  - `app::g_step_rate` makes `Pace()` hold to the step rate, and `app::g_show_every` makes `D3DDevice_Swap` present one step in N (30 steps at 60 and shows every second one);
+- **Esc quits** (`sdk\runtime\app\main.cpp`), unless the F1 window or the F9 screen is open, which Esc closes instead (`src\common\game_info.cpp`).
+- **Controller:** F9 opens the controller setup screen, ported from the Baldur's Gate recomp (`src\common\pad_mapping.cpp`). It lists the connected pads, runs a map-every-button wizard, tests live and restores the default. Mappings are kept per pad in `controller_mapping.txt` beside the exe and re-applied at window start. `padmap::Prepare` (the `init` hook) turns SDL's XInput on with override priority, because the SDK turns it off and Xbox pads then showed up as unmapped DirectInput devices. `CMakeLists.txt` gives `pad_mapping.cpp` SDL's include path. The earlier launcher and its start screen stay removed; display options are in F1.
+- **FPS overlay:** F2 toggles it (`src\common\overlay.cpp`). It is saved as `show_fps`, and is also a row on the F1 Game page.
+- **Settings window (F1):** the SDK's own (`settings_window = true`): display, aspect ratio (4:3, 16:9, fill the screen), anti-aliasing (FXAA, SMAA, MSAA), sharpening, CRT, audio, controller and Quit (Back + Start together on a pad opens it). It replaced the game's own F8 panel, FXAA pass (`enhance.cpp`) and F12 quit dialog. The 3D view widens by itself at 16:9: the game's own widescreen path draws it, checked in a race at 4:3 and 16:9. A wider screen than 16:9 is not checked, and the game would need a camera hook like MechAssault's for a true ultrawide picture.
+- **Frame rate** (30, 60, 120; default 60), a row on the F1 Game page saved as `frame_rate` (an index into 30, 60, 120):
+  - the game steps once per Swap with a fixed dt, a float at `0x664C8C` (1/60 s, or 1/50 s when `sub_00074176` finds the PAL flag at `0x8A7834`) and whole milliseconds at `0x664C88`. `graphics::ApplyGameFps` (`src\common\graphics.cpp`) rewrites those two, and only when they hold the game's own or our earlier value. The `.rdata` constants 1/60 and 1/50 are shared with other code, so they are not touched;
+  - `app::g_step_rate` makes `Pace()` hold to the step rate, and `app::g_show_every` makes `D3DDevice_Swap` present one step in N (30 steps at 60 and shows every second one). The choice replaces the SDK's frame rate cap;
   - 120 is experimental: anything that counts whole frames runs faster.
 - Memory experiment: a 16 MB upload ring cut memory from about 343 MB to 195 MB but stuttered, so it was reverted to 64 MB. See `TODO.md`.
 
 ## 7b. SDK update
 
+- The game now builds against the main SDK repo (`xberecomp-ref`, `sdk\` is a junction to it), which already carries all the Burnout SDK work. The earlier `sdk\` checkout, with its local edits, is kept as `sdk.old-local`.
 - The SDK was fast-forwarded from `65e959d` to upstream `f7b13fd` (129 commits). The uncommitted Burnout changes were stashed and re-applied, with conflicts resolved in `memory.cpp`, `input.cpp`, `d3d12.cpp`, `dsound.cpp` and `d3d8.cpp`. A backup of the previous patch is outside the repo, and `stash@{0}` in `sdk` is still held as a safety net.
 - `config\game.toml` `[xbe]` now needs `library = "Game.dll"`.
 - Merge fixes: a duplicate `BUFFER(SetEG, 2)` in `dsound.cpp`, the `Walk` function header in `d3d8.cpp`, and a `<cstdio>` include removed from `x86_ops.h` (the freestanding `Game_code` build has no such header).
