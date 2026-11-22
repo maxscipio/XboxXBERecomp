@@ -358,12 +358,15 @@ void Display(Settings& s) {
 }
 
 void Graphics(Settings& s) {
-    int percent = int(s.render_percent);
-    if (RowSlider("Render scale", &percent, 25, 200, 5, "%", "Percent of the screen's height; applies at once. Above 100% also smooths edges."))
-        s.render_percent = uint32_t(percent);
+    int percent = int(s.render_scale);
+    if (RowSlider("Render scale", &percent, 25, 500, 25, "%",
+                  "Percent of the console's own resolution: 100% is 480 lines (640 x 480 at 4:3, 854 x 480 at 16:9, 1120 x 480 "
+                  "at 21:9), 225% is 1080 lines, 450% is 2160. Above the screen's lines it is downsampled, which also smooths "
+                  "edges; applies at once."))
+        s.render_scale = uint32_t(percent);
     RowValues("Anisotropic filtering", &s.aniso, {{0, "As the game asks"}, {2, "2x"}, {4, "4x"}, {8, "8x"}, {16, "16x"}});
     RowValues("Antialiasing (MSAA)", &s.msaa, {{0, "Off"}, {1, "MSAA 2x"}, {2, "MSAA 4x"}, {3, "MSAA 8x"}},
-              "Smooths the edges of the 3D scene at once (Direct3D 12). Render scale above 100% also smooths edges.");
+              "Smooths the edges of the 3D scene at once (Direct3D 12). A render scale above the screen's lines also smooths edges.");
     RowCheck("Smooth alpha edges", &s.alpha_coverage,
              "With MSAA on: softens fences, leaves and other cut-out textures, which MSAA alone misses. A dark outline on some is possible.");
     int edge = s.smaa ? 2 : s.fxaa ? 1 : 0;
@@ -375,7 +378,7 @@ void Graphics(Settings& s) {
     }
     int filter = int(s.scale_filter % 2);
     const char* filter_names[] = {"Bilinear", "Sharp"};
-    if (RowChoice("Scaling filter", &filter, filter_names, 2, "How the frame reaches the screen's size when render scale is not 100%."))
+    if (RowChoice("Scaling filter", &filter, filter_names, 2, "How the frame reaches the screen's size when the render scale's lines differ from the screen's."))
         s.scale_filter = uint32_t(filter);
     int sharp = int(s.sharpen);
     if (RowSlider("Sharpening", &sharp, 0, 100, 5, "%", "Contrast adaptive sharpening of the finished frame; applies at once."))

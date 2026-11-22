@@ -20,7 +20,7 @@ inline constexpr uint32_t kFpsCapRefresh = 1;  // fps_cap: the monitor's refresh
 struct Settings {
     DisplayMode display_mode = DisplayMode::Borderless;
     uint32_t width = 0, height = 0;  // 0 is the desktop mode
-    uint32_t render_percent = 100;   // of the output height
+    uint32_t render_scale = 200;     // percent of the console's own resolution: 100 is its 480 lines (640 x 480 at 4:3, 854 x 480 at 16:9, 1120 x 480 at 21:9)
     uint32_t fps_cap = 60;           // 0 unlimited, kFpsCapRefresh the monitor's refresh rate
     bool vsync = true;
     uint32_t aniso = 0;              // 0 as the game asks

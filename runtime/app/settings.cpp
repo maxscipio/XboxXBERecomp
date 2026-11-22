@@ -46,7 +46,7 @@ void Load() {
         if (mode == kModes[i]) s.display_mode = DisplayMode(i);
     s.width = t["width"].value_or(s.width);
     s.height = t["height"].value_or(s.height);
-    s.render_percent = t["render_percent"].value_or(s.render_percent);
+    s.render_scale = t["render_scale"].value_or(s.render_scale);
     s.fps_cap = t["fps_cap"].value_or(s.fps_cap);
     s.vsync = t["vsync"].value_or(s.vsync);
     s.aniso = t["anisotropic_filtering"].value_or(s.aniso);
@@ -97,7 +97,7 @@ toml::table Table() {
     toml::table t{{"display_mode", kModes[uint32_t(s.display_mode)]},
                   {"width", int64_t(s.width)},
                   {"height", int64_t(s.height)},
-                  {"render_percent", int64_t(s.render_percent)},
+                  {"render_scale", int64_t(s.render_scale)},
                   {"fps_cap", int64_t(s.fps_cap)},
                   {"vsync", s.vsync},
                   {"anisotropic_filtering", int64_t(s.aniso)},
@@ -224,14 +224,12 @@ bool FillsScreen() {
     return Get().aspect == 3;
 }
 
-float RenderScale(uint32_t guest_height) {
+// Render scale is a percent of the console's own resolution, whatever the screen: 100% is the guest's height (480 lines
+// for most titles: 640 x 480 at 4:3, 854 x 480 at 16:9, 1120 x 480 at 21:9), 225% is 1080 lines. It sets how much the
+// frame is oversampled or downsampled on its way to the screen.
+float RenderScale(uint32_t) {
     if (g_native_render || Get().console_look) return 1.0f;
-    Mode m = CachedOutput();
-    // a picture wider than the output is letterboxed: it is only as tall as it is wide over its aspect
-    float shown = float(m.height);
-    if (m.width) shown = std::min(shown, float(m.width) / Aspect());
-    float h = shown * (Get().render_percent / 100.0f);
-    return guest_height ? std::max(h / guest_height, 0.1f) : 1.0f;
+    return std::max(Get().render_scale / 100.0f, 0.1f);
 }
 
 }  // namespace app
