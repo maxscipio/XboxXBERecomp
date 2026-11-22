@@ -226,7 +226,11 @@ bool FillsScreen() {
 
 float RenderScale(uint32_t guest_height) {
     if (g_native_render || Get().console_look) return 1.0f;
-    float h = CachedOutput().height * (Get().render_percent / 100.0f);
+    Mode m = CachedOutput();
+    // a picture wider than the output is letterboxed: it is only as tall as it is wide over its aspect
+    float shown = float(m.height);
+    if (m.width) shown = std::min(shown, float(m.width) / Aspect());
+    float h = shown * (Get().render_percent / 100.0f);
     return guest_height ? std::max(h / guest_height, 0.1f) : 1.0f;
 }
 
