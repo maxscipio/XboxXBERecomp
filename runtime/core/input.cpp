@@ -282,15 +282,6 @@ void UpdatePads() {
 
 }  // namespace
 
-// SDL has no gamepad mapping for this pad, so it stays a plain joystick. Button and axis numbers come from
-// the pad's DirectInput layout. Triggers rest at -1 and read on the positive half.
-constexpr char kPadMapping[] =
-    "03008b3bd620000011a7000013056800,Core (Plus) Wired Controller,"
-    "a:b0,b:b1,x:b2,y:b3,leftshoulder:b9,rightshoulder:b10,lefttrigger:+a4,righttrigger:+a5,"
-    "back:b4,start:b6,leftstick:b7,rightstick:b8,"
-    "dpup:b11,dpdown:b12,dpleft:b13,dpright:b14,"
-    "leftx:a0,lefty:a1,rightx:a2,righty:a3,platform:Windows";
-
 void Init() {
     if (g_sdl) return;  // started already for the game code window
     // WGI reads the triggers apart and HIDAPI takes PlayStation and Switch pads. DirectInput stays off: with it on,
@@ -308,7 +299,6 @@ void Init() {
     }
     int v = SDL_GetVersion();
     LOGI("input: SDL %d.%d.%d", SDL_VERSIONNUM_MAJOR(v), SDL_VERSIONNUM_MINOR(v), SDL_VERSIONNUM_MICRO(v));
-    if (SDL_AddGamepadMapping(kPadMapping) < 0) LOGE("input: pad mapping rejected: %s", SDL_GetError());
     std::lock_guard lock(g_lock);
     g_sdl = true;
     LoadScript();
