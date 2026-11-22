@@ -37,11 +37,11 @@ How the European Xbox Burnout (title ID 0x41430006, XDK 1.0.4361) went from an I
 - Fixed garbled 3D: the HLE render-state table overlapped the vertex stream table. The stream table is now placed correctly, and there are a pusher and control block, a bounded `SetComplex` mirror, and `Walk(Dev(kDevPush))` in the draw calls. `CDevice_KickOff` and `D3DDevice_SetIndices` are no-ops.
 - Transform constants: an `XfLoad` handler for the NV2A pushbuffer methods, plus `UpdateViewportConstants` (viewport constants `c-38` and `c-37`).
 - **4361 render-state numbering** (`sdk\runtime\xdk\d3d8.cpp`, layout key `RenderState_Numbering = 4361`): the game numbers render states differently from the 5849 table the renderer assumes. The guest-to-host maps are:
-  - deferred block: guest 82 ↔ host 92;
-  - material sources: guest 96–99 ↔ host 110–113;
-  - ambient: guest 105 ↔ host 115;
-  - points: guest 106–113 ↔ host 116–123;
-  - complex block: starts at guest 117 ↔ host 136.
+  - deferred block: guest 82 â†” host 92;
+  - material sources: guest 96â€“99 â†” host 110â€“113;
+  - ambient: guest 105 â†” host 115;
+  - points: guest 106â€“113 â†” host 116â€“123;
+  - complex block: starts at guest 117 â†” host 136.
   `TwoSidedLighting` no longer enables the back-colour path. This fixed the black road and buildings, and colours are correct.
 - Cube-face tiles are copied by quads into cube surfaces, and `BindCubeTargets` in `sdk\runtime\gpu\d3d12.cpp` binds them for sampling.
 - **Reflections:** the game sets its pixel shaders through `D3DDevice_SetPixelShaderProgram`, which builds `{1, 0, definition}` and jumps into `SetPixelShader`. The runtime could not read that handle record because `PixelShader_Definition` (`0x8`) was missing in `sdk\xdk\4361\layout.toml`. Adding it makes the car draws use the combiner shaders that sample the cube map and the fresnel ramp.
@@ -58,7 +58,7 @@ How the European Xbox Burnout (title ID 0x41430006, XDK 1.0.4361) went from an I
 ## 7. Host features added this week
 
 - **Esc quits** (`sdk\runtime\app\main.cpp`), unless the F1 window is open, which Esc closes instead.
-- **Controller:** set up in the F1 window. The game's own F9 controller screen (`pad_mapping.cpp`, ported from the Baldur's Gate recomp) is removed. The earlier launcher and its start screen stay removed; display options are in F1.
+- **Controller:** set up in the F1 window. The game's own F9 controller screen (`pad_mapping.cpp`, ported from the Baldur's Gate recomp) is removed. `game_info.cpp` sets `init` to turn SDL's XInput back on with override priority (the SDK turns it off, and the wired pad then shows as an unmapped DirectInput device); `CMakeLists.txt` gives it SDL's include path. The earlier launcher and its start screen stay removed; display options are in F1.
 - **FPS overlay:** F10 toggles it (`src\common\overlay.cpp`). It is saved as `show_fps`, and is also a row on the F1 Game page.
 - **Settings window (F1):** the SDK's own (`settings_window = true`): display, aspect ratio (4:3, 16:9, fill the screen), anti-aliasing (FXAA, SMAA, MSAA), sharpening, CRT, audio, controller and Quit (Back + Start together on a pad opens it). It replaced the game's own F8 panel, FXAA pass (`enhance.cpp`) and F12 quit dialog. The 3D view widens by itself at 16:9: the game's own widescreen path draws it, checked in a race at 4:3 and 16:9. A wider screen than 16:9 is not checked, and the game would need a camera hook like MechAssault's for a true ultrawide picture.
 - **Frame rate** (30, 60, 120; default 60), a row on the F1 Game page saved as `frame_rate` (an index into 30, 60, 120):
