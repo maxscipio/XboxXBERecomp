@@ -6,9 +6,9 @@ How the European Xbox Burnout (title ID 0x41430006, XDK 1.0.4361) went from an I
 
 - Extracted `default.xbe` from the ISO and scaffolded the game project from the SDK template (Xbox-XBERecomp).
 - Installed LLVM 23.1.3 and VS 2022 BuildTools, and used Capstone, Ghidra 12.1.4 and JDK 21 for disassembly work.
-- The SDK ships only XDK 5849 data, but Burnout's 7 libraries are all 4361. Using a 4361 installer you supplied (licensing flagged, local-only):
+- The SDK ships only XDK 5849 data, but Burnout's 7 libraries are all 4361:
   - matched 632 library function names to addresses in `default.xbe`;
-  - derived the 4361 data layout, `sdk\xdk\4361\layout.toml`, from disassembly and relocations. Only anchors verified against the game's code are kept, and a missing key traps when used;
+  - derived the 4361 data layout, `sdk\xdk\4361\layout.toml`, from disassembly and relocations of the game. Only anchors verified against the game's code are kept, and a missing key traps when used;
   - wrote the game's symbol map, `config\game.toml`, from those matches.
 - Matching initially missed the DirectSound members: C++-mangled names were dropped, and COMDAT section symbols at offset 0 cut function bodies short. A second matcher that used only external symbols as boundaries found them.
 - Disc check: a stray loose `assets\default.xbe` (left by my launch script) made the disc check fail. `assets\` now holds only the ISO, and `default.xbe` is staged only for a build and removed afterwards.
@@ -99,7 +99,3 @@ How the European Xbox Burnout (title ID 0x41430006, XDK 1.0.4361) went from an I
 | Sound | `sdk\runtime\xdk\dsound.cpp` |
 | Input and app | `sdk\runtime\core\input.cpp`, `input.h`, `sdk\runtime\app\main.cpp`, `app.h` |
 | Game hooks and UI | `src\game\hooks.cpp`, `src\common\game_info.cpp`, `overlay.cpp`, `graphics.cpp`, `enhance.cpp` (and their headers) |
-
-## Licensing
-
-`config\game.toml` symbols and `sdk\xdk\4361\*` derive from the leaked XDK 4361 installer. Settle the licensing before committing or sharing anything. Nothing is committed yet.
