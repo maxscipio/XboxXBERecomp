@@ -69,8 +69,8 @@ How the European Xbox Burnout (title ID 0x41430006, XDK 1.0.4361) went from an I
   - Not checked: a real 21:9 or wider monitor, the pause menu, other tracks. The Vulkan backend has no `g_wide_2d` handling.
 - **Frame rate:** the F1 "Frame rate cap" and Vsync drive the game (no game-side option; `src\common\graphics.cpp`):
   - the game steps once per Swap with a fixed dt, a float at `0x664C8C` (1/60 s, or 1/50 s when `sub_00074176` finds the PAL flag at `0x8A7834`) and whole milliseconds at `0x664C88`. `graphics::ApplyGameFps` rewrites those two, and only when they hold the game's own or our earlier value. The `.rdata` constants 1/60 and 1/50 are shared with other code, so they are not touched;
-  - unlimited (`fps_cap` 0) means the display's refresh rate (`app::RefreshRate()`); 30 steps at 60 and `app::g_show_every` presents every second one; above 60 raises the step rate (experimental: anything that counts whole frames runs faster). The generated code has no limiter of its own;
-  - `AchievedSteps` keeps the game's speed when the machine cannot reach the cap: if the shown fps is at least 97% of the target dt stays at the target, otherwise dt follows the real rate (floored at 30 steps a second, 3% deadband). The host draw cost (7-10 ms a frame on an Iris Xe) is why a race does not reach 120;
+  - the shown rate is at most 60: unlimited (`fps_cap` 0) and any cap above 60 mean 60, and 30 steps at 60 while `app::g_show_every` presents every second one. Raising the step rate above 60 was tried and removed, it was choppy. The generated code has no limiter of its own;
+  - `AchievedSteps` keeps the game's speed when the machine cannot reach the cap: if the shown fps is at least 97% of the target dt stays at the target, otherwise dt follows the real rate (floored at 30 steps a second, 3% deadband). The host draw cost is 7-10 ms a frame on an Iris Xe;
   - frame interpolation, to show more frames without raising the step rate, is in `TODO.md`.
 - Memory experiment: a 16 MB upload ring cut memory from about 343 MB to 195 MB but stuttered, so it was reverted to 64 MB. See `TODO.md`.
 
