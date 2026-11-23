@@ -119,7 +119,8 @@ HLE_STDCALL(XInitDevices, 2) {
         W32(kMemoryUnitType + XDK_XPP_Changed, 0);
         W32(kMemoryUnitType + XDK_XPP_Previous, 0);
     }
-    UpdatePorts();
+    // The bus enumerates asynchronously: right after the call no insertion is pending yet, and a title that asks
+    // XGetDeviceChanges then (Gun Valkyrie fails its input init on one) must see none. The poller reports the pads.
     if (!g_poller) {
         g_poller = true;
         std::thread([] {

@@ -904,6 +904,7 @@ private:
         t.ms_dirty = false;
     }
     float HudSqueeze(const State& s, const Assembled& a) const;
+    float Widen3D(const Assembled& a) const;
     float XStretch(uint32_t gw, uint32_t gh) const {
         if (ext_ || !guest_h_ || gh != guest_h_ || gw < gh || aspect_ <= 0) return 1;
         return std::max(1.0f, aspect_ * float(gh) / float(gw));
@@ -3829,6 +3830,7 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
     SurfaceSize(bound_rt_ ? s.rt : s.zs, size.w, size.h);
     DrawConstants c{};
     c.hud[0] = HudSqueeze(s, a) - 1;
+    c.hud[2] = Widen3D(a);
     c.hud[1] = (bound_rt_ ? bound_rt_->gw : guest_w_) * 0.5f;
     FillUvRectConstants(s, prim, count, a, sh, stages, c);
     UploadConstants(s, sh, k, stages, size, c);
@@ -4690,7 +4692,9 @@ float D3D12Backend::HudSqueeze(const State& s, const Assembled& a) const {
     constexpr float kWide = 16.0f / 9.0f;
     constexpr uint32_t kCmpAlways = 0x207;  // D3DCMP_ALWAYS: a title may switch the test on and have it always pass
     bool tested = s.rs[kRsZEnable] && SimpleState(s, kMZFunc) != kCmpAlways;
-    if (!a.pretransformed || tested || aspect_ <= kWide + 1e-3f || !bound_rt_) return 1;
+    // a title with g_widen_3d lays its 2D out for 4:3, so at 16:9 it is kept in a centred 4:3 part
+    const float ref = app::g_widen_3d && aspect_ <= kWide + 1e-3f ? 4.0f / 3.0f : kWide;
+    if (!a.pretransformed || tested || aspect_ <= ref + 1e-3f || !bound_rt_) return 1;
     const Target& t = *bound_rt_;
     if (XStretch(t.gw, t.gh) <= 1) return 1;
     // the draw's extent across, from register 0's x
@@ -4708,7 +4712,16 @@ float D3D12Backend::HudSqueeze(const State& s, const Assembled& a) const {
         }
     }
     if (lo > hi || (lo <= 1.0f && hi >= float(t.gw) - 1.0f)) return 1;
-    return kWide / aspect_;
+    return ref / aspect_;
+}
+
+// app::g_widen_3d: the factor across for a 3D draw into a screen shaped target, 0 for none (hud[2])
+float D3D12Backend::Widen3D(const Assembled& a) const {
+    if (!app::g_widen_3d || a.pretransformed || !bound_rt_) return 0;
+    const Target& t = *bound_rt_;
+    float aspect = app::Aspect();
+    if (t.gw != guest_w_ || t.gh != guest_h_ || aspect <= 4.0f / 3.0f + 1e-3f) return 0;
+    return (4.0f / 3.0f) / aspect;
 }
 
 // colour targets and depth buffers at least half the console's screen (the scene, not reflections, maps or shadow

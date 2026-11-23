@@ -87,6 +87,11 @@ inline std::atomic<float> g_aspect{0};
 // With g_aspect set wider than 16:9: the title widens its 3D views to it, and the renderer keeps the 2D in a centred
 // 16:9 part as for FillsScreen, instead of stretching everything across the picture
 inline std::atomic<bool> g_wide_2d{false};
+// A title that draws its 3D for 4:3 whatever the shown aspect sets this: the renderer narrows the vertex program and
+// fixed function 3D of the screen shaped targets about the middle by 4/3 over Aspect(), and the stretch to the picture
+// widens it back, with more of the world at the sides instead of a stretched one. Its 2D is laid out for 4:3 too, so
+// at 16:9 (with g_wide_2d) the 2D is kept in a centred 4:3 part. D3D12 backend only.
+inline std::atomic<bool> g_widen_3d{false};
 inline std::atomic<bool> g_native_render{false};  // render at the console's resolution, whatever the render scale
 // g_aspect, else the output's shape when the aspect setting fills the screen (never under 16:9), else 16:9 when
 // Widescreen, else 4:3

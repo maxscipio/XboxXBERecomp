@@ -271,7 +271,11 @@ const char* kVsEpilogue = R"(
 std::string VsEpilogue() {
     std::string s = kVsEpilogue;
     size_t at = s.find("    q.x = p.x * 2");
-    if (at != std::string::npos) s.insert(at, Hooks().Position());
+    if (at != std::string::npos) {
+        // hud.z: g_widen_3d's factor across, 0 for none; w 1 is a 2D draw
+        s.insert(at, "    if (hud.z > 0 && abs(p.w - 1) > 1e-3) p.x = surf.x * 0.5 + (p.x - surf.x * 0.5) * hud.z;\n");
+        s.insert(at, Hooks().Position());
+    }
     return s;
 }
 
@@ -950,6 +954,7 @@ std::string FixedVertexHlsl(uint16_t regs, bool pretransformed, uint64_t decode,
     if (pretransformed) return s + VsEpilogue();
     s += R"(
     VOut o;
+    if (hud.z > 0 && abs(cp.w - 1) > 1e-3) cp.x *= hud.z;  // g_widen_3d, as in VsEpilogue
     // like the pretransformed ones, target sized passes end half a console pixel short of the far edges
     float2 sp = (float2(cp.x, -cp.y) / cp.w + 1) * 0.5 * surf.xy;
     if (surf.w == 0 && abs(sp.x - (surf.x - 0.5)) < 1e-3) cp.x = cp.w;
