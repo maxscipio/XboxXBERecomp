@@ -305,8 +305,6 @@ std::recursive_mutex& UiLock() {
 void ApplyDisplay() { PostMessageW(g_hwnd, kApplyDisplay, 0, 0); }
 void OpenGameWindow(bool apply) { SendMessageW(g_hwnd, kOpenWindow, apply, 0); }
 
-namespace {
-
 // the game window's monitor's refresh rate, read again each second (a mode change, a move to another monitor); 0
 // when unreadable
 uint32_t RefreshRate() {
@@ -325,8 +323,6 @@ uint32_t RefreshRate() {
     }
     return rate;
 }
-
-}  // namespace
 
 namespace {
 std::atomic<uint32_t> g_engine_fps{0};

@@ -193,9 +193,12 @@ void Quit();  // closes the game window, as its close button does
 // blanks of the 60 Hz the console ran at (2 is 30 frames a second); a title's own frame rate, when set, replaces it
 void Pace(uint32_t interval = 1);
 void SetEngineFps(uint32_t fps);
+uint32_t RefreshRate();  // the game window's monitor's refresh rate in Hz, 0 when unreadable
 
 // A title that steps its game once per Swap sets these (any thread): the steps per second Pace holds to instead of
-// the fps cap (0: the cap), and how many steps make one shown frame (1: every step is shown).
+// the fps cap (0: the cap), and how many steps make one shown frame (1: every step is shown). Above the console's 60 it
+// also calls SetEngineFps with the rate, or Pace holds the steps back to 60. Such a title takes its rate from the fps
+// cap and the refresh rate itself (see Settings::fps_cap), as nothing else slows or speeds its game.
 inline std::atomic<uint32_t> g_step_rate{0};
 inline std::atomic<uint32_t> g_show_every{1};
 

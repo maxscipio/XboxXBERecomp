@@ -67,17 +67,18 @@ How the European Xbox Burnout (title ID 0x41430006, XDK 1.0.4361) went from an I
   - the SDK change: `app::g_wide_2d` (`runtime\app\app.h`, `settings.cpp` `FillsScreen`), and `D3D12Backend::HudSqueeze` treats a depth test that always passes as no test, since Burnout draws its HUD and menu text that way.
   - `RenderScale` (`runtime\app\settings.cpp`) sizes the render targets by the letterboxed picture's height, not the output's: 21:9 on a 16:9 display rendered 2520x1080 where 1920x823 is shown, and held about 54 fps on an Iris Xe; it now holds 60, like 16:9 (about 59.8 average, GPU about 31% busy, so the remaining dips are CPU side).
   - Not checked: a real 21:9 or wider monitor, the pause menu, other tracks. The Vulkan backend has no `g_wide_2d` handling.
-- **Frame rate** (30, 60, 120; default 60), a row on the F1 Game page saved as `frame_rate` (an index into 30, 60, 120):
-  - the game steps once per Swap with a fixed dt, a float at `0x664C8C` (1/60 s, or 1/50 s when `sub_00074176` finds the PAL flag at `0x8A7834`) and whole milliseconds at `0x664C88`. `graphics::ApplyGameFps` (`src\common\graphics.cpp`) rewrites those two, and only when they hold the game's own or our earlier value. The `.rdata` constants 1/60 and 1/50 are shared with other code, so they are not touched;
-  - `app::g_step_rate` makes `Pace()` hold to the step rate, and `app::g_show_every` makes `D3DDevice_Swap` present one step in N (30 steps at 60 and shows every second one). The choice replaces the SDK's frame rate cap;
-  - 120 is experimental: anything that counts whole frames runs faster.
+- **Frame rate:** the F1 "Frame rate cap" and Vsync drive the game (no game-side option; `src\common\graphics.cpp`):
+  - the game steps once per Swap with a fixed dt, a float at `0x664C8C` (1/60 s, or 1/50 s when `sub_00074176` finds the PAL flag at `0x8A7834`) and whole milliseconds at `0x664C88`. `graphics::ApplyGameFps` rewrites those two, and only when they hold the game's own or our earlier value. The `.rdata` constants 1/60 and 1/50 are shared with other code, so they are not touched;
+  - unlimited (`fps_cap` 0) means the display's refresh rate (`app::RefreshRate()`); 30 steps at 60 and `app::g_show_every` presents every second one; above 60 raises the step rate (experimental: anything that counts whole frames runs faster). The generated code has no limiter of its own;
+  - `AchievedSteps` keeps the game's speed when the machine cannot reach the cap: if the shown fps is at least 97% of the target dt stays at the target, otherwise dt follows the real rate (floored at 30 steps a second, 3% deadband). The host draw cost (7-10 ms a frame on an Iris Xe) is why a race does not reach 120;
+  - frame interpolation, to show more frames without raising the step rate, is in `TODO.md`.
 - Memory experiment: a 16 MB upload ring cut memory from about 343 MB to 195 MB but stuttered, so it was reverted to 64 MB. See `TODO.md`.
 
 ## 7b. SDK update
 
 - The game now builds against the main SDK repo (`xberecomp-ref`, `sdk\` is a junction to it), which already carries all the Burnout SDK work. The earlier `sdk\` checkout, with its local edits, is kept as `sdk.old-local`.
 - The SDK was fast-forwarded from `65e959d` to upstream `f7b13fd` (129 commits). The uncommitted Burnout changes were stashed and re-applied, with conflicts resolved in `memory.cpp`, `input.cpp`, `d3d12.cpp`, `dsound.cpp` and `d3d8.cpp`. A backup of the previous patch is outside the repo, and `stash@{0}` in `sdk` is still held as a safety net.
-- `config\game.toml` `[xbe]` now needs `library = "Game.dll"`.
+- `config\game.toml` `[xbe]` now needs `library = "Burnout.dll"` (`<exe>.dll`).
 - Merge fixes: a duplicate `BUFFER(SetEG, 2)` in `dsound.cpp`, the `Walk` function header in `d3d8.cpp`, and a `<cstdio>` include removed from `x86_ops.h` (the freestanding `Game_code` build has no such header).
 - Hooks added to the SDK for the frame-rate and FXAA work (the same ones `bgda-recomp` carries in `patches\sdk.patch`): `gpu::Extension::Present`, `Backend::Present(front, show)` so a step can go unshown, and `app::g_step_rate` and `g_show_every`.
 - Not ported: Dark Alliance's SSAO and soft shadows. They rest on that game's depth projection and shadow map, which have not been measured for Burnout.
@@ -99,3 +100,9 @@ How the European Xbox Burnout (title ID 0x41430006, XDK 1.0.4361) went from an I
 | Sound | `sdk\runtime\xdk\dsound.cpp` |
 | Input and app | `sdk\runtime\core\input.cpp`, `input.h`, `sdk\runtime\app\main.cpp`, `app.h` |
 | Game hooks and UI | `src\game\hooks.cpp`, `src\common\game_info.cpp`, `overlay.cpp`, `graphics.cpp`, `enhance.cpp` (and their headers) |
+
+## 7c. Project layout
+
+- The Burnout Vulkan copy (urnout-recomp-vulkan) is removed: the SDK has the Vulkan backend (XBE_BACKEND=vulkan).
+- The template names are replaced: target and exe Burnout, log logs\burnout.log, uild.bat/elease.bat GAME_EXE=Burnout, xbe_symbols --library Burnout.dll.
+- Like the newer ports, the game runs from out\run (	ools\iter.ps1 builds, copies Burnout.exe/.dll/.pdb there and runs). out\run\assets holds only the disc image; the extracted default.xbe stays in the repo's ssets\. Settings, hdd\ saves and logs are beside the exe in out\run.

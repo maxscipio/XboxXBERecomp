@@ -1297,6 +1297,7 @@ bool D3D12Backend::CreateDevice() {
     BOOL tear = FALSE;
     if (SUCCEEDED(factory_.As(&f5))) f5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &tear, sizeof(tear));
     tearing_ = tear;
+    LOGI("d3d12: tearing %s", tearing_ ? "supported" : "not supported");
     return true;
 }
 

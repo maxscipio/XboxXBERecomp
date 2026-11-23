@@ -711,17 +711,17 @@ HLE_STDCALL(D3DDevice_BlockUntilVerticalBlank, 0) {
     std::this_thread::sleep_until(now + std::chrono::microseconds(frame - us % frame));
     return 0;
 }
-// (status): D3DRASTER_STATUS {InVBlank, ScanLine} on a 60 Hz frame clock. The library reads the GPU's scanline,
-// which counts the front buffer's lines, then the blank: 45 lines per 480 shown, as on NTSC.
+// (status): D3DRASTER_STATUS {InVBlank, ScanLine} on a frame clock of app::g_vblank_rate. The library reads the GPU's
+// scanline, which counts the front buffer's lines, then the blank: 45 lines per 480 shown, as on NTSC.
 HLE_STDCALL(D3DDevice_GetRasterStatus, 1) {
-    constexpr int64_t kFrameMicroseconds = 16667;
     constexpr uint32_t kBlankLines = 45;
+    int64_t frame_us = 1000000 / std::clamp<uint32_t>(app::g_vblank_rate, 1, 1000);
     constexpr uint32_t kShownLines = 480;
     uint32_t shown = g_buffers[0] ? (R32(g_buffers[0] + 0x10) >> 12 & 0xFFF) + 1 : kShownLines;
     uint32_t lines = shown + shown * kBlankLines / kShownLines;
     auto now = std::chrono::steady_clock::now().time_since_epoch();
-    int64_t into_frame = std::chrono::duration_cast<std::chrono::microseconds>(now).count() % kFrameMicroseconds;
-    uint32_t line = uint32_t(into_frame * lines / kFrameMicroseconds);
+    int64_t into_frame = std::chrono::duration_cast<std::chrono::microseconds>(now).count() % frame_us;
+    uint32_t line = uint32_t(into_frame * lines / frame_us);
     W32(a[0], line >= shown);
     W32(a[0] + 4, line < shown ? line : 0);
     return 0;
