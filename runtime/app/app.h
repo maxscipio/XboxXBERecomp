@@ -92,6 +92,10 @@ inline std::atomic<bool> g_wide_2d{false};
 // widens it back, with more of the world at the sides instead of a stretched one. Its 2D is laid out for 4:3 too, so
 // at 16:9 (with g_wide_2d) the 2D is kept in a centred 4:3 part. D3D12 backend only.
 inline std::atomic<bool> g_widen_3d{false};
+// A title whose 2D (HUD, menus) is laid out for 4:3 even though its 3D is widened sets this: at any aspect the renderer
+// keeps the 2D in a centred 4:3 part (needs g_wide_2d or the fill the screen setting), so gauges and text stay in
+// proportion. D3D12 backend only.
+inline std::atomic<bool> g_hud_4x3{false};
 inline std::atomic<bool> g_native_render{false};  // render at the console's resolution, whatever the render scale
 // g_aspect, else the output's shape when the aspect setting fills the screen (never under 16:9), else 16:9 when
 // Widescreen, else 4:3

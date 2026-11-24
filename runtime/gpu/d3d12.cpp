@@ -4692,8 +4692,8 @@ float D3D12Backend::HudSqueeze(const State& s, const Assembled& a) const {
     constexpr float kWide = 16.0f / 9.0f;
     constexpr uint32_t kCmpAlways = 0x207;  // D3DCMP_ALWAYS: a title may switch the test on and have it always pass
     bool tested = s.rs[kRsZEnable] && SimpleState(s, kMZFunc) != kCmpAlways;
-    // a title with g_widen_3d lays its 2D out for 4:3, so at 16:9 it is kept in a centred 4:3 part
-    const float ref = app::g_widen_3d && aspect_ <= kWide + 1e-3f ? 4.0f / 3.0f : kWide;
+    // a title that lays its 2D out for 4:3 (g_hud_4x3) has it kept in a centred 4:3 part; g_widen_3d does so at 16:9
+    const float ref = app::g_hud_4x3 || (app::g_widen_3d && aspect_ <= kWide + 1e-3f) ? 4.0f / 3.0f : kWide;
     if (!a.pretransformed || tested || aspect_ <= ref + 1e-3f || !bound_rt_) return 1;
     const Target& t = *bound_rt_;
     if (XStretch(t.gw, t.gh) <= 1) return 1;
