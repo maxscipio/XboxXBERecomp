@@ -1570,6 +1570,7 @@ BUFFER(SetMode, 3) {
     return 0;
 }
 BUFFER(SetDopplerFactor, 3) { return 0; }
+BUFFER(SetRolloffFactor, 3) { return 0; }
 // the cone is not modelled: (this, inside, outside, apply), (this, volume, apply) and (this, x, y, z, apply)
 BUFFER(SetConeAngles, 4) { return 0; }
 BUFFER(SetConeOutsideVolume, 3) { return 0; }
