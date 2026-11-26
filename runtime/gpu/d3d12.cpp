@@ -3839,7 +3839,12 @@ void D3D12Backend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t 
     GuestExtent size;
     SurfaceSize(bound_rt_ ? s.rt : s.zs, size.w, size.h);
     DrawConstants c{};
-    c.hud[0] = HudSqueeze(s, a) - 1;
+    // a draw that reads a rendered image is an effect laid over the place in the scene the image was taken from
+    // (Crimson Skies' boost lens copies the frame around the plane and draws it back there): squeezed, it slides
+    // off the plane toward the center, a double image
+    bool reads_target = false;
+    for (int i = 0; i < 4; i++) reads_target |= stages.rt[i] && !stages.info[i].shadow;
+    c.hud[0] = reads_target ? 0 : HudSqueeze(s, a) - 1;
     c.hud[2] = Widen3D(a);
     c.hud[1] = (bound_rt_ ? bound_rt_->gw : guest_w_) * 0.5f;
     FillUvRectConstants(s, prim, count, a, sh, stages, c);
