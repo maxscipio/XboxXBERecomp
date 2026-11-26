@@ -62,6 +62,7 @@ void Load() {
         if (msaa == kMsaa[i]) s.msaa = i;
     s.fxaa = t["fxaa"].value_or(s.fxaa);
     s.smaa = t["smaa"].value_or(s.smaa);
+    s.upscale_videos = t["upscale_videos"].value_or(s.upscale_videos);
     s.scale_filter = std::min<uint32_t>(t["scale_filter"].value_or(s.scale_filter), 1);
     s.alpha_coverage = t["alpha_coverage"].value_or(s.alpha_coverage);
     s.low_latency = t["low_latency"].value_or(s.low_latency);
@@ -109,6 +110,7 @@ toml::table Table() {
                   {"msaa", kMsaa[std::min(s.msaa, kMsaaCount - 1)]},
                   {"fxaa", s.fxaa},
                   {"smaa", s.smaa},
+                  {"upscale_videos", s.upscale_videos},
                   {"scale_filter", int64_t(s.scale_filter)},
                   {"alpha_coverage", s.alpha_coverage},
                   {"low_latency", s.low_latency},

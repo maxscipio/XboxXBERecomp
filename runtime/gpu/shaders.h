@@ -14,11 +14,12 @@ struct TexInfo {
     uint8_t kind = kTexNone;
     uint8_t rect = 0;    // linear texture, coordinates in texels
     uint8_t shadow = 0;  // depth texture: 1 D24, 2 D16
-    uint8_t flags = 0;   // kTexWide, kTexTarget, kTexOpaque; bits 0 and 1 are a backend extension's
+    uint8_t flags = 0;   // kTexWide, kTexTarget, kTexOpaque, kTexUpscale; bits 0 and 1 are a backend extension's
 };
 enum : uint8_t {
     kTexWide = 4,     // an upscaled target shrunk by the pass: each tap averaged over console texels
     kTexTarget = 8,   // a render target, read where the console's pixel offset puts it (DrawConstants::rtshift)
+    kTexUpscale = 32,  // a large linear image magnified on screen (video frames, stills): upscale() instead of a tap
     kTexOpaque = 16,  // a target read as a format without alpha (R5G6B5, X1R5G5B5, X8R8G8B8): alpha reads 1, whatever
                       // the draws into it wrote
 };

@@ -32,6 +32,7 @@ struct Settings {
     uint32_t msaa = 0;               // 0 none, 1 2 3 MSAA 2x 4x 8x on the scene (kMsaa)
     bool fxaa = false;               // FXAA on the finished frame
     bool smaa = false;               // SMAA on the finished frame, in place of FXAA
+    bool upscale_videos = true;      // video frames and stills: bicubic and deinterlaced instead of bilinear
     uint32_t scale_filter = 0;       // the frame to the screen's size: 0 bilinear, 1 sharp (Catmull-Rom)
     bool alpha_coverage = false;     // with MSAA, alpha tested edges (fences, leaves) get partial coverage
     bool low_latency = false;        // a waitable swap chain holding one frame, at the next start

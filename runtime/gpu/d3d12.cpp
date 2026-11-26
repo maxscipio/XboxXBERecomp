@@ -2518,6 +2518,10 @@ ID3D12Resource* D3D12Backend::BindGuestTexture(const State& s, int stage, const 
     const Tex& drawn = tx.swap ? *tx.swap : tx;
     FillTextureView(drawn, d, stages.sv[stage]);
     if (fi.depth) info.shadow = ShadowDepthKind(d.format);
+    // a large linear 32 bit image magnified on screen is a video frame or a still: the shader upscales it
+    if (app::Get().upscale_videos && scale_ > 1.2f && (d.format == 0x1E || d.format == 0x12) && d.width >= 320 &&
+        d.height >= 240)
+        info.flags |= kTexUpscale;
     if (ext_) ext_->Sampled(d, nullptr, tx.flags, info);
     return drawn.res.Get();
 }
