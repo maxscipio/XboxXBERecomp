@@ -25,6 +25,9 @@ struct Settings {
     bool vsync = true;
     uint32_t aniso = 0;              // 0 as the game asks
     bool shader_cache = true;        // compiled shaders and pipelines kept in <exe dir>/shader_cache for the next run
+    // the pipelines earlier runs used are made at launch when the driver lacks them (gpu/d3d12.cpp), behind a window
+    // that shows itself when this takes a moment; off, the game makes them as it draws (needs shader_cache)
+    bool precompile_shaders = true;
     bool custom_textures = true;     // images in textures\replacement\ beside the exe replace the game's
     bool dump_textures = false;      // each texture once into textures\dumps\ beside the exe
     uint32_t texture_dump_format = 0;  // 0 PNG, 1 DDS
@@ -126,6 +129,12 @@ void* Window();  // HWND
 bool OpenSplash();        // window thread, at launch; false without one, and the game window opens at once
 void SplashFirstFrame();  // the game's first Swap: waits out the splash's minimum, then opens the game window
 void CloseSplash();       // window thread
+// the shader pre-compile's window (precompile.cpp), for the renderer at launch; it has its own thread and shows itself
+// only once the work takes a moment. new_driver: the pipelines were ready for another driver than this one
+void OpenPrecompileWindow(uint32_t total, bool new_driver);
+void PrecompileStep();         // one more done, any thread
+bool PrecompileSkipped();      // Skip was pressed: the rest compile as the game meets them
+void ClosePrecompileWindow();  // and with "Don't show this again" ticked, turns precompile_shaders off and saves
 void OpenGameWindow(bool apply = true);  // any thread but the window thread's; returns once the window is up
 // relaunched: the previous instance keeps its window up until this one has shown its first frames (handover.cpp)
 bool StartHandover();   // window thread, at launch; true: the game window starts hidden

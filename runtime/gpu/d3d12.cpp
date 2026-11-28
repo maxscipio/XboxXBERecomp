@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <chrono>
 #include <cmath>
@@ -23,11 +24,16 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <fstream>
 #include <limits>
 #include <mutex>
 #include <optional>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include <imgui.h>
 #include <backends/imgui_impl_dx12.h>
@@ -700,6 +706,8 @@ class D3D12Backend final : public Backend, public Context {
 public:
     ~D3D12Backend() override {
         if (g_ui_backend == this) g_ui_backend = nullptr;
+        SavePipelineLibrary(true);
+        if (pso_list_) std::fclose(pso_list_);
     }
 
     bool Init(uint32_t width, uint32_t height) override;
@@ -822,7 +830,18 @@ private:
     void KeyDepthStencil(const State& s, const Assembled& a, PsoKey& k);
     ID3D12PipelineState* EnsurePipeline(const PsoKey& k, ID3DBlob* vs, ID3DBlob* ps);
     void FillPipelineDesc(const PsoKey& k, ID3DBlob* vs, ID3DBlob* ps, D3D12_GRAPHICS_PIPELINE_STATE_DESC& d) const;
-    void ExpandPoints(D3D12_GRAPHICS_PIPELINE_STATE_DESC& d, bool sprite);
+    ID3DBlob* PointShader(bool sprite);  // the geometry shader points (or sprites) are drawn with
+    void PipelineDesc(const PsoKey& k, ID3DBlob* vs, ID3DBlob* ps, ID3DBlob* gs, D3D12_INPUT_ELEMENT_DESC el[16],
+                      D3D12_GRAPHICS_PIPELINE_STATE_DESC& d) const;
+    ComPtr<ID3D12PipelineState> MakePipeline(uint64_t h, const D3D12_GRAPHICS_PIPELINE_STATE_DESC& d);
+    void ListPipeline(uint64_t h, const PsoKey& k);
+    // pipelines kept between runs: OpenPipelineCache, at Init, then its steps in call order
+    void OpenPipelineCache();
+    void FindDriver();
+    std::vector<PsoKey> OpenPipelineList(const std::filesystem::path& file);
+    bool OpenPipelineLibrary(const std::filesystem::path& dir);
+    void Precompile(const std::vector<PsoKey>& keys, bool new_driver);
+    void SavePipelineLibrary(bool wait = false);
     float TargetScale() const;  // host pixels per console pixel of the bound target
     float RenderTargetShift(const State& s, const DrawShaders& sh) const;
     void FillDepthConstants(const State& s, const DrawShaders& sh, const PsoKey& k, DrawConstants& c) const;
@@ -1030,6 +1049,17 @@ private:
     std::unordered_map<uint64_t, ComPtr<ID3DBlob>> blobs_;
     std::unordered_map<uint64_t, uint64_t> shader_src_;  // vertex and pixel program keys to source hash
     std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> psos_;
+    // pipelines kept between runs (OpenPipelineCache)
+    std::wstring driver_;                    // GPU and driver version, vendor-device-version
+    FILE* pso_list_ = nullptr;               // the key list, open to append
+    std::unordered_set<uint64_t> listed_;    // key hashes on it
+    ComPtr<ID3D12PipelineLibrary> pso_lib_;  // this driver's; null where the device has none
+    std::vector<char> pso_lib_blob_;         // what pso_lib_ was made from, which must outlive it
+    std::filesystem::path pso_lib_file_;
+    std::mutex pso_lib_lock_;
+    std::atomic<bool> pso_lib_dirty_{false};   // stored pipelines since the last save
+    std::atomic<bool> pso_lib_saving_{false};  // a save's thread is writing
+    PerfClock::time_point pso_lib_saved_ = PerfClock::now();
     // on disk for the next run: compiled shaders, appended as they are made
     std::filesystem::path shader_cache_;
     uint32_t cache_shaders_ = 0;  // loaded from disk
@@ -1148,6 +1178,7 @@ bool D3D12Backend::Init(uint32_t width, uint32_t height) {
     ImGui_ImplDX12_Init(dev_.Get(), kFrames, DXGI_FORMAT_B8G8R8A8_UNORM, ui_heap_.Get(),
                         ui_heap_->GetCPUDescriptorHandleForHeapStart(), ui_heap_->GetGPUDescriptorHandleForHeapStart());
     LoadSettings();
+    OpenPipelineCache();
     Begin();
     g_ui_backend = this;
     LOGI("d3d12: %ux%u guest, %ux%u window, render scale %.3f", width, height, bb_w_, bb_h_, scale_);
@@ -2275,14 +2306,256 @@ void main(point VOut v[1], inout TriangleStream<VOut> strip) {
 
 // a point is drawn as its whole console pixel, or a sprite as its square, by a geometry shader, solid, front facing
 // and never culled
-void D3D12Backend::ExpandPoints(D3D12_GRAPHICS_PIPELINE_STATE_DESC& d, bool sprite) {
-    uint64_t hash;
-    ID3DBlob* gs = Compile(sprite ? SpriteHlsl() : PointHlsl(), "main", "gs_5_0", hash);
+void ExpandPoints(D3D12_GRAPHICS_PIPELINE_STATE_DESC& d, ID3DBlob* gs) {
     if (!gs) return;
     d.GS = {gs->GetBufferPointer(), gs->GetBufferSize()};
     d.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
     d.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
     d.RasterizerState.FrontCounterClockwise = FALSE;
+}
+
+// Compile touches blobs_, so this is for the renderer's thread
+ID3DBlob* D3D12Backend::PointShader(bool sprite) {
+    uint64_t hash;
+    return Compile(sprite ? SpriteHlsl() : PointHlsl(), "main", "gs_5_0", hash);
+}
+
+// the whole pipeline; el holds its input layout. Any thread
+void D3D12Backend::PipelineDesc(const PsoKey& k, ID3DBlob* vs, ID3DBlob* ps, ID3DBlob* gs,
+                                D3D12_INPUT_ELEMENT_DESC el[16], D3D12_GRAPHICS_PIPELINE_STATE_DESC& d) const {
+    d = {};
+    d.InputLayout = {el, FillInputLayout(k, el)};
+    FillPipelineDesc(k, vs, ps, d);
+    if (k.topo == uint32_t(Topology::Points)) ExpandPoints(d, gs);
+}
+
+// this driver's library has it, else it is compiled and stored there; null when it can't be made. Any thread, one
+// call per key at a time
+ComPtr<ID3D12PipelineState> D3D12Backend::MakePipeline(uint64_t h, const D3D12_GRAPHICS_PIPELINE_STATE_DESC& d) {
+    ComPtr<ID3D12PipelineState> pso;
+    wchar_t name[20];
+    swprintf(name, 20, L"%016llx", (unsigned long long)h);
+    if (pso_lib_ && SUCCEEDED(pso_lib_->LoadGraphicsPipeline(name, &d, IID_PPV_ARGS(&pso)))) return pso;
+    if (FAILED(dev_->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&pso)))) return nullptr;
+    if (pso_lib_) {
+        std::lock_guard lock(pso_lib_lock_);
+        if (SUCCEEDED(pso_lib_->StorePipeline(name, pso.Get()))) pso_lib_dirty_ = true;
+    }
+    return pso;
+}
+
+// pipelines kept between runs (OpenPipelineCache): the list of every pipeline key a draw needed, for any driver, a
+// header then a PsoKey after another; and this driver's compiled pipelines, a pipeline library named for the GPU and
+// driver version, so a new driver finds none and compiles the list again
+constexpr char kPipelineList[] = "pipelines.bin";
+constexpr uint32_t kPipelineListMagic = 0x314F5350;  // 'PSO1'
+constexpr double kPipelineSaveSeconds = 30;          // the library is written at most this often while it grows
+
+struct PipelineListHeader {
+    uint32_t magic;
+    uint32_t key_size;  // sizeof(PsoKey): a changed key drops the list
+    uint64_t version;   // the shader cache's salt, as its keys are the shaders' hashes
+};
+
+PipelineListHeader ListHeader() {
+    return {kPipelineListMagic, uint32_t(sizeof(PsoKey)), kShaderCacheSalt};
+}
+
+bool ReadWhole(const std::filesystem::path& file, std::vector<char>& out) {
+    std::ifstream in(file, std::ios::binary);
+    if (!in) return false;
+    out.assign(std::istreambuf_iterator<char>(in), {});
+    return true;
+}
+
+// written beside the file, then moved over it, so a crash never leaves half a file
+void WriteWhole(const std::filesystem::path& file, const void* data, size_t size) {
+    std::filesystem::path tmp = file;
+    tmp += "." + std::to_string(GetCurrentProcessId()) + ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        if (!out) return;
+        out.write(static_cast<const char*>(data), std::streamsize(size));
+        out.close();
+        if (!out) return;
+    }
+    std::error_code ec;
+    std::filesystem::rename(tmp, file, ec);
+    if (ec) std::filesystem::remove(tmp, ec);
+}
+
+// the driver's GPU and version, as the library's file name has them
+void D3D12Backend::FindDriver() {
+    ComPtr<IDXGIAdapter1> adapter;
+    DXGI_ADAPTER_DESC1 ad{};
+    LARGE_INTEGER umd{};
+    if (FAILED(factory_->EnumAdapterByLuid(dev_->GetAdapterLuid(), IID_PPV_ARGS(&adapter))) ||
+        FAILED(adapter->GetDesc1(&ad)) || FAILED(adapter->CheckInterfaceSupport(__uuidof(IDXGIDevice), &umd))) {
+        driver_ = L"unknown";
+        return;
+    }
+    wchar_t id[64];
+    swprintf(id, 64, L"%04x-%04x-%u.%u.%u.%u", ad.VendorId, ad.DeviceId, HIWORD(umd.HighPart), LOWORD(umd.HighPart),
+             HIWORD(umd.LowPart), LOWORD(umd.LowPart));
+    driver_ = id;
+}
+
+// the keys of earlier runs, each once, into listed_; then the list is open to append to
+std::vector<PsoKey> D3D12Backend::OpenPipelineList(const std::filesystem::path& file) {
+    std::vector<PsoKey> keys;
+    std::vector<char> bytes;
+    PipelineListHeader want = ListHeader(), have{};
+    bool valid = ReadWhole(file, bytes) && bytes.size() >= sizeof(have);
+    if (valid) std::memcpy(&have, bytes.data(), sizeof(have));
+    valid = valid && std::memcmp(&have, &want, sizeof(have)) == 0;
+    for (size_t at = sizeof(have); valid && at + sizeof(PsoKey) <= bytes.size(); at += sizeof(PsoKey)) {
+        PsoKey k;
+        std::memcpy(&k, bytes.data() + at, sizeof(k));
+        if (listed_.insert(Hash(&k, sizeof(k))).second) keys.push_back(k);
+    }
+    // a list cut short mid-key, as a crash may leave it, is written again from its whole keys
+    if (valid && (bytes.size() - sizeof(have)) % sizeof(PsoKey) == 0) {
+        pso_list_ = _wfopen(file.c_str(), L"ab");
+    } else if ((pso_list_ = _wfopen(file.c_str(), L"wb"))) {
+        std::fwrite(&want, sizeof(want), 1, pso_list_);
+        for (const PsoKey& k : keys) std::fwrite(&k, sizeof(k), 1, pso_list_);
+        std::fflush(pso_list_);
+    }
+    return keys;
+}
+
+// this driver's library from an earlier run, else an empty one; true when the pipelines were made for another driver
+bool D3D12Backend::OpenPipelineLibrary(const std::filesystem::path& dir) {
+    ComPtr<ID3D12Device1> dev1;
+    if (FAILED(dev_.As(&dev1))) {
+        LOGI("d3d12: no pipeline libraries, pipelines are compiled each run");
+        return false;
+    }
+    pso_lib_file_ = dir / (L"pipelines-" + driver_ + L".lib");
+    bool other = false;
+    std::error_code ec;
+    for (auto& e : std::filesystem::directory_iterator(dir, ec)) {
+        std::wstring name = e.path().filename().wstring();
+        if (name.starts_with(L"pipelines-") && e.path().extension() == L".lib" && e.path() != pso_lib_file_) {
+            other = true;  // another driver's: of no use to this one
+            std::filesystem::remove(e.path(), ec);
+        }
+    }
+    if (ReadWhole(pso_lib_file_, pso_lib_blob_) && !pso_lib_blob_.empty()) {
+        HRESULT hr = dev1->CreatePipelineLibrary(pso_lib_blob_.data(), pso_lib_blob_.size(), IID_PPV_ARGS(&pso_lib_));
+        if (SUCCEEDED(hr)) return other;
+        // the driver's own check: D3D12_ERROR_DRIVER_VERSION_MISMATCH or D3D12_ERROR_ADAPTER_NOT_FOUND
+        LOGR("d3d12: the saved pipelines do not suit this driver (%08lX), compiling them again", (unsigned long)hr);
+        other = true;
+    }
+    pso_lib_blob_.clear();
+    if (FAILED(dev1->CreatePipelineLibrary(nullptr, 0, IID_PPV_ARGS(&pso_lib_)))) {
+        pso_lib_ = nullptr;
+        LOGI("d3d12: no pipeline library, pipelines are compiled each run");
+    }
+    return other;
+}
+
+// Init: the pipelines earlier runs used, ready before the game draws (Precompile) unless the player turned it off.
+// Needs the shader cache, which holds the shaders they are made of
+void D3D12Backend::OpenPipelineCache() {
+    std::filesystem::path dir = ShaderCacheDir();
+    if (dir.empty()) return;
+    FindDriver();
+    std::vector<PsoKey> keys = OpenPipelineList(dir / kPipelineList);
+    bool new_driver = OpenPipelineLibrary(dir);
+    LOGR("d3d12: %zu pipelines from earlier runs, driver %ls%s", keys.size(), driver_.c_str(),
+         new_driver ? " (changed)" : "");
+    if (!keys.empty() && app::Get().precompile_shaders) Precompile(keys, new_driver);
+}
+
+// every listed pipeline loaded from the library or compiled, on worker threads, behind the pre-compile window (which
+// shows itself only when this takes a moment); skipped, the rest are made as the game draws them
+void D3D12Backend::Precompile(const std::vector<PsoKey>& keys, bool new_driver) {
+    auto start = PerfClock::now();
+    app::OpenPrecompileWindow(uint32_t(keys.size()), new_driver);
+    // the shaders from blobs_ on this thread, as it is the renderer's; one without leaves its pipelines to the game,
+    // which compiles the shader again
+    auto blob = [&](uint64_t h) -> ID3DBlob* {
+        auto it = blobs_.find(h);
+        return it == blobs_.end() ? nullptr : it->second.Get();
+    };
+    std::vector<std::pair<ID3DBlob*, ID3DBlob*>> code(keys.size());
+    ID3DBlob* gs[2] = {};
+    bool has_gs[2] = {};
+    for (size_t i = 0; i < keys.size(); i++) {
+        code[i] = {blob(keys[i].vs), blob(keys[i].ps)};
+        if (keys[i].topo == uint32_t(Topology::Points)) has_gs[keys[i].sprite != 0] = true;
+    }
+    for (int s = 0; s < 2; s++)
+        if (has_gs[s]) gs[s] = PointShader(s != 0);
+    std::vector<ComPtr<ID3D12PipelineState>> made(keys.size());
+    std::atomic<size_t> next{0};
+    auto work = [&] {
+        for (size_t i; (i = next++) < keys.size() && !app::PrecompileSkipped();) {
+            if (code[i].first && code[i].second) {
+                D3D12_INPUT_ELEMENT_DESC el[16];
+                D3D12_GRAPHICS_PIPELINE_STATE_DESC d;
+                PipelineDesc(keys[i], code[i].first, code[i].second, gs[keys[i].sprite != 0], el, d);
+                made[i] = MakePipeline(Hash(&keys[i], sizeof(PsoKey)), d);
+            }
+            app::PrecompileStep();
+        }
+    };
+    // one thread a core but one, which the window and the system keep
+    unsigned threads = std::clamp(std::thread::hardware_concurrency(), 2u, 17u) - 1;
+    std::vector<std::thread> workers;
+    for (unsigned i = 0; i < threads; i++) workers.emplace_back(work);
+    for (std::thread& t : workers) t.join();
+    bool skipped = app::PrecompileSkipped();
+    app::ClosePrecompileWindow();
+    size_t ready = 0;
+    for (size_t i = 0; i < keys.size(); i++)
+        if (made[i]) {
+            psos_[Hash(&keys[i], sizeof(PsoKey))] = made[i];
+            ready++;
+        }
+    LOGR("d3d12: %zu of %zu pipelines ready at launch, %.0f ms on %u threads%s", ready, keys.size(), PerfMs(start),
+         threads, skipped ? " (skipped)" : "");
+    SavePipelineLibrary();
+}
+
+// the library to disk when it has gained pipelines, written on a thread of its own, one write at a time; wait (the
+// backend's end) writes it here
+void D3D12Backend::SavePipelineLibrary(bool wait) {
+    if (!pso_lib_) return;
+    if (wait) {
+        while (pso_lib_saving_) Sleep(10);
+    } else if (pso_lib_saving_) {
+        return;
+    }
+    if (!pso_lib_dirty_.exchange(false)) return;
+    pso_lib_saved_ = PerfClock::now();
+    std::vector<char> data;
+    {
+        std::lock_guard lock(pso_lib_lock_);
+        data.resize(pso_lib_->GetSerializedSize());
+        if (data.empty() || FAILED(pso_lib_->Serialize(data.data(), data.size()))) {
+            pso_lib_dirty_ = true;
+            return;
+        }
+    }
+    if (wait) {
+        WriteWhole(pso_lib_file_, data.data(), data.size());
+        return;
+    }
+    pso_lib_saving_ = true;
+    std::thread([this, data = std::move(data), file = pso_lib_file_] {
+        WriteWhole(file, data.data(), data.size());
+        pso_lib_saving_ = false;
+    }).detach();
+}
+
+// a new key goes on the list, for the next run's pre-compile
+void D3D12Backend::ListPipeline(uint64_t h, const PsoKey& k) {
+    if (!pso_list_ || !listed_.insert(h).second) return;
+    std::fwrite(&k, sizeof(k), 1, pso_list_);
+    std::fflush(pso_list_);
 }
 
 float D3D12Backend::TargetScale() const {
@@ -2303,14 +2576,12 @@ ID3D12PipelineState* D3D12Backend::EnsurePipeline(const PsoKey& k, ID3DBlob* vs,
     auto it = psos_.find(h);
     if (it != psos_.end()) return it->second.Get();
     D3D12_INPUT_ELEMENT_DESC el[16];
-    uint32_t n = FillInputLayout(k, el);
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC d{};
-    d.InputLayout = {el, n};
-    FillPipelineDesc(k, vs, ps, d);
-    if (k.topo == uint32_t(Topology::Points)) ExpandPoints(d, k.sprite);
-    ComPtr<ID3D12PipelineState> pso;
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC d;
+    PipelineDesc(k, vs, ps, k.topo == uint32_t(Topology::Points) ? PointShader(k.sprite != 0) : nullptr, el, d);
     g_perf.psos++;
-    if (FAILED(dev_->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(&pso)))) LOGE("d3d12: pipeline creation failed");
+    ComPtr<ID3D12PipelineState> pso = MakePipeline(h, d);
+    if (pso) ListPipeline(h, k);
+    else LOGE("d3d12: pipeline creation failed");
     psos_[h] = pso;
     return pso.Get();
 }
@@ -4655,6 +4926,7 @@ void D3D12Backend::Present(const Surface& front, bool show) {
     frame_++;
     ReleaseOldTextures();
     ResetFrame();
+    if (pso_lib_dirty_ && PerfMs(pso_lib_saved_) > kPipelineSaveSeconds * 1000) SavePipelineLibrary();
     if (show) CountFps();
     if (diag::Perf()) LogPerf();
     ApplySettings();

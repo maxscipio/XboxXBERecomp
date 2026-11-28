@@ -403,6 +403,8 @@ void Graphics(Settings& s) {
               "The game sets its own pace; the cap only limits it further.");
     RowCheck("Custom textures", &s.custom_textures, "Images in textures\\replacement beside the exe replace the game's.");
     RowCheck("Shader cache", &s.shader_cache, "Compiled shaders kept for the next run. Applies at the next start.");
+    RowCheck("Pre-compile shaders", &s.precompile_shaders,
+             "Prepares at launch the pipelines earlier runs used, so they do not stutter in the game. Needs the shader cache. Applies at the next start.");
 }
 
 void Audio(Settings& s) {
